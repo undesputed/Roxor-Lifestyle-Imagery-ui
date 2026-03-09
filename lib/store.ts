@@ -48,3 +48,15 @@ export function updateImageStatus(id: string, status: ReviewStatus): void {
   );
   saveImages(images);
 }
+
+export function deleteImage(id: string): void {
+  saveImages(loadImages().filter((img) => img.id !== id));
+}
+
+/** Find the most recent approved ls1 URL for a given salesCode. */
+export function findApprovedLs1Url(salesCode: string): string | null {
+  const match = loadImages().find(
+    (img) => img.salesCode === salesCode && img.slot === "ls1" && img.status === "approved"
+  );
+  return match?.url ?? null;
+}
