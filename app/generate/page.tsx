@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { addImage } from "@/lib/store";
+import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 
 type Slot = "ls1" | "ls2" | "ls3";
 type Resolution = "1K" | "2K" | "4K";
@@ -23,13 +24,23 @@ function GenerateForm() {
   const searchParams = useSearchParams();
   const [salesCode, setSalesCode] = useState(searchParams.get("salesCode") ?? "");
   const [slot, setSlot] = useState<Slot>("ls1");
-  const [resolution, setResolution] = useState<Resolution>("1K");
+  const [resolution, setResolution] = useState<Resolution>("2K");
   const [ls1Url, setLs1Url] = useState("");
   const [status, setStatus] = useState<JobStatus>("idle");
   const [taskId, setTaskId] = useState<string | null>(null);
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pollCount, setPollCount] = useState(0);
+
+  // Prompt customisation
+  const [extrasOpen, setExtrasOpen] = useState(false);
+  const [heroColour, setHeroColour] = useState("");
+  const [heroWidth, setHeroWidth] = useState("");
+  const [heroHeight, setHeroHeight] = useState("");
+  const [roomStyle, setRoomStyle] = useState("");
+  const [tileStyle, setTileStyle] = useState("");
+  const [extraStyling, setExtraStyling] = useState("");
+  const [customNotes, setCustomNotes] = useState("");
 
   const canSubmit = salesCode.trim() !== "" && (slot !== "ls2" || ls1Url.trim() !== "");
 
@@ -44,7 +55,21 @@ function GenerateForm() {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ salesCode: salesCode.toUpperCase(), slot, resolution, ls1Url: ls1Url || null }),
+        body: JSON.stringify({
+          salesCode: salesCode.toUpperCase(),
+          slot,
+          resolution,
+          ls1Url: ls1Url || null,
+          extras: {
+            heroColour: heroColour.trim() || null,
+            heroWidth: heroWidth ? parseInt(heroWidth) : null,
+            heroHeight: heroHeight ? parseInt(heroHeight) : null,
+            roomStyle: roomStyle.trim() || null,
+            tileStyle: tileStyle.trim() || null,
+            extraStyling: extraStyling.trim() || null,
+            customNotes: customNotes.trim() || null,
+          },
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? data.error ?? "Generation failed");
@@ -63,21 +88,31 @@ function GenerateForm() {
       setPollCount((n) => n + 1);
       try {
         const res = await fetch(`/api/generate/${taskId}/status`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          setError((errData as { detail?: string }).detail ?? `Status check failed (${res.status})`);
+          setStatus("failed");
+          clearInterval(interval);
+          return;
+        }
         const data = await res.json();
 
         if (data.state === "success" && data.resultUrl) {
           setResultUrl(data.resultUrl);
           setStatus("done");
-          // Save to review queue
           addImage({ salesCode: salesCode.toUpperCase(), slot, url: data.resultUrl });
           clearInterval(interval);
         } else if (data.state === "fail") {
           setError(data.failMsg ?? "Generation failed");
           setStatus("failed");
           clearInterval(interval);
+        } else if (data.state && !["waiting", "processing", "pending", "queued"].includes(data.state)) {
+          setError(`Unexpected generation state: ${data.state}`);
+          setStatus("failed");
+          clearInterval(interval);
         }
       } catch {
-        // keep polling on network error
+        // keep polling on transient network error
       }
     }, 10000);
     return () => clearInterval(interval);
@@ -164,6 +199,113 @@ function GenerateForm() {
               ))}
             </div>
             <p className="text-xs text-muted-foreground">Higher resolution uses more kie.ai credits.</p>
+          </div>
+
+          {/* Customise Prompt */}
+          <div className="border rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setExtrasOpen((v) => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/50 transition-colors"
+            >
+              <span>Customise Prompt</span>
+              {extrasOpen ? <ChevronUpIcon className="size-4 text-muted-foreground" /> : <ChevronDownIcon className="size-4 text-muted-foreground" />}
+            </button>
+
+            {extrasOpen && (
+              <div className="border-t px-4 py-4 space-y-4 bg-muted/20">
+                <p className="text-xs text-muted-foreground">
+                  These fields are merged into the base prompt. Leave blank to use the default.
+                </p>
+
+                {/* Hero description */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Product Description</label>
+                  <input
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    placeholder="e.g. matt black gloss floor-standing vanity with chrome bar handles and white basin"
+                    value={heroColour}
+                    onChange={(e) => setHeroColour(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">Overrides the default product colour and finish description.</p>
+                </div>
+
+                {/* Dimensions */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Product Dimensions (mm)</label>
+                  <div className="flex gap-3">
+                    <div className="flex-1 space-y-1">
+                      <span className="text-xs text-muted-foreground">Width</span>
+                      <input
+                        type="number"
+                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        placeholder="810"
+                        value={heroWidth}
+                        onChange={(e) => setHeroWidth(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <span className="text-xs text-muted-foreground">Height</span>
+                      <input
+                        type="number"
+                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        placeholder="840"
+                        value={heroHeight}
+                        onChange={(e) => setHeroHeight(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* LS1-specific fields */}
+                {slot === "ls1" && (
+                  <>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium">Room Style</label>
+                      <input
+                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        placeholder="e.g. contemporary minimalist, industrial loft, coastal, traditional"
+                        value={roomStyle}
+                        onChange={(e) => setRoomStyle(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium">Wall & Floor Tiles</label>
+                      <input
+                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        placeholder="e.g. dark charcoal large-format matte porcelain, herringbone white metro tile"
+                        value={tileStyle}
+                        onChange={(e) => setTileStyle(e.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {/* Extra scene elements */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Extra Scene Elements</label>
+                  <input
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    placeholder="e.g. add a freestanding bath on the back wall, replace towel rail with a radiator"
+                    value={extraStyling}
+                    onChange={(e) => setExtraStyling(e.target.value)}
+                  />
+                </div>
+
+                {/* Custom notes */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">Additional Notes</label>
+                  <textarea
+                    rows={3}
+                    className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                    placeholder="Any additional instructions appended to the end of the prompt…"
+                    value={customNotes}
+                    onChange={(e) => setCustomNotes(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <Button

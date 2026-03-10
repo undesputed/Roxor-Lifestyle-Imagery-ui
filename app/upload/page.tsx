@@ -13,14 +13,15 @@ function UploadForm() {
   const [salesCode, setSalesCode] = useState(searchParams.get("salesCode") ?? "");
   const [slot, setSlot] = useState(searchParams.get("slot") ?? "ls1");
   const [sourceUrl, setSourceUrl] = useState(searchParams.get("url") ?? "");
-  const [brand, setBrand] = useState("Balterley");
-  const [family, setFamily] = useState("Vanity Basin Units");
+  const [brand, setBrand] = useState("");
+  const [family, setFamily] = useState("");
   const [status, setStatus] = useState<UploadStatus>("idle");
   const [result, setResult] = useState<{ name?: string; cdnUrl?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const targetName = salesCode ? `${salesCode.toUpperCase()}_${slot}.jpg` : "";
-  const canSubmit = salesCode.trim() !== "" && sourceUrl.trim() !== "";
+  const targetName = salesCode ? `${salesCode.toUpperCase()}_${slot}.png` : "";
+  const urlValid = sourceUrl.trim().startsWith("http");
+  const canSubmit = salesCode.trim() !== "" && urlValid;
 
   async function handleUpload() {
     setStatus("uploading");
@@ -89,7 +90,7 @@ function UploadForm() {
             <label className="text-sm font-medium">Image URL</label>
             <input
               className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              placeholder="https://... (kie.ai result URL or local path)"
+              placeholder="https://... (kie.ai result URL)"
               value={sourceUrl}
               onChange={(e) => setSourceUrl(e.target.value)}
             />
@@ -119,6 +120,10 @@ function UploadForm() {
               <span className="text-muted-foreground">Target filename: </span>
               <span className="font-mono font-medium">{targetName}</span>
             </div>
+          )}
+
+          {sourceUrl && !urlValid && (
+            <p className="text-xs text-destructive">Image URL must start with https://</p>
           )}
 
           <Button onClick={handleUpload} disabled={!canSubmit || status === "uploading"}>

@@ -149,7 +149,7 @@ export default function ProductsPage() {
     try {
       const res = await fetch("/api/products/missing-lifestyle");
       const data: ApiResponse = await res.json();
-      if (!res.ok) throw new Error((data as { detail?: string }).detail ?? "Failed to load");
+      if (!res.ok) throw new Error((data as { detail?: string }).detail ?? `Request failed (${res.status})`);
       setMissingProducts(data.products);
     } catch (e: unknown) {
       setErrorMissing(e instanceof Error ? e.message : "Unknown error");
@@ -164,8 +164,7 @@ export default function ProductsPage() {
     try {
       const res = await fetch("/api/products/candidates");
       const data: ApiResponse = await res.json();
-      console.log("Response: ", data);
-      if (!res.ok) throw new Error((data as { detail?: string }).detail ?? "Failed to load");
+      if (!res.ok) throw new Error((data as { detail?: string }).detail ?? `Request failed (${res.status})`);
       setCandidateProducts(data.products);
     } catch (e: unknown) {
       setErrorCandidates(e instanceof Error ? e.message : "Unknown error");

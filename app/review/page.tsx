@@ -1,11 +1,19 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { EyeIcon } from "lucide-react";
 import {
   loadImages,
   addImage,
@@ -21,7 +29,6 @@ import {
 
 type RerunState =
   | { phase: "idle" }
-  | { phase: "open"; resolution: "1K" | "2K" | "4K"; ls1Url: string }
   | { phase: "submitting" }
   | { phase: "polling"; taskId: string; elapsed: number }
   | { phase: "done" }
@@ -41,7 +48,7 @@ const STATUS_BADGE: Record<ReviewStatus, { label: string; className: string }> =
   rejected: { label: "Rejected", className: "bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700" },
 };
 
-// ── Rerun panel (inline generation) ──────────────────────────────────────────
+// ── Rerun panel ───────────────────────────────────────────────────────────────
 
 function RerunPanel({
   salesCode,
@@ -54,7 +61,7 @@ function RerunPanel({
   onDone: () => void;
   onCancel: () => void;
 }) {
-  const [resolution, setResolution] = useState<"1K" | "2K" | "4K">("1K");
+  const [resolution, setResolution] = useState<"1K" | "2K" | "4K">("2K");
   const [ls1Url, setLs1Url] = useState(() =>
     slot === "ls2" ? (findApprovedLs1Url(salesCode) ?? "") : ""
   );
@@ -69,12 +76,7 @@ function RerunPanel({
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          salesCode,
-          slot,
-          resolution,
-          ls1Url: ls1Url || null,
-        }),
+        body: JSON.stringify({ salesCode, slot, resolution, ls1Url: ls1Url || null }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "Generation failed");
@@ -84,15 +86,18 @@ function RerunPanel({
     }
   }
 
-  // Poll every 10s when in polling phase
   useEffect(() => {
     if (state.phase !== "polling") return;
     const interval = setInterval(async () => {
-      setState((s) =>
-        s.phase === "polling" ? { ...s, elapsed: s.elapsed + 10 } : s
-      );
+      setState((s) => s.phase === "polling" ? { ...s, elapsed: s.elapsed + 10 } : s);
       try {
         const res = await fetch(`/api/generate/${state.taskId}/status`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          setState({ phase: "failed", error: (errData as { detail?: string }).detail ?? `Status check failed (${res.status})` });
+          clearInterval(interval);
+          return;
+        }
         const data = await res.json();
         if (data.state === "success" && data.resultUrl) {
           addImage({ salesCode, slot, url: data.resultUrl });
@@ -102,28 +107,28 @@ function RerunPanel({
         } else if (data.state === "fail") {
           setState({ phase: "failed", error: data.failMsg ?? "Generation failed" });
           clearInterval(interval);
+        } else if (data.state && !["waiting", "processing", "pending", "queued"].includes(data.state)) {
+          setState({ phase: "failed", error: `Unexpected state: ${data.state}` });
+          clearInterval(interval);
         }
       } catch {
-        // keep polling on transient error
+        // keep polling on transient network error
       }
     }, 10000);
     return () => clearInterval(interval);
   }, [state, salesCode, slot, onDone]);
 
   return (
-    <div className="mt-3 rounded-lg border bg-muted/50 p-4 space-y-4">
+    <div className="rounded-lg border bg-muted/50 p-4 space-y-4">
       <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         Rerun — {slot.toUpperCase()} · {salesCode}
       </p>
 
-      {/* ls1 URL input for ls2 */}
       {slot === "ls2" && (
         <div className="space-y-1.5">
           <label className="text-xs font-medium">LS1 Wide Shot URL</label>
           {ls1Url && (
-            <p className="text-[11px] text-green-600 dark:text-green-400">
-              Auto-filled from approved LS1
-            </p>
+            <p className="text-[11px] text-green-600 dark:text-green-400">Auto-filled from approved LS1</p>
           )}
           <input
             className="w-full rounded-md border bg-background px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
@@ -135,7 +140,6 @@ function RerunPanel({
         </div>
       )}
 
-      {/* Resolution */}
       <div className="space-y-1.5">
         <label className="text-xs font-medium">Resolution</label>
         <div className="flex gap-2">
@@ -157,7 +161,6 @@ function RerunPanel({
         </div>
       </div>
 
-      {/* Status */}
       {state.phase === "polling" && (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
@@ -174,14 +177,8 @@ function RerunPanel({
         <p className="text-xs text-destructive">{state.error}</p>
       )}
 
-      {/* Actions */}
       <div className="flex gap-2">
-        <Button
-          size="sm"
-          onClick={handleGenerate}
-          disabled={!canSubmit}
-          className="text-xs"
-        >
+        <Button size="sm" onClick={handleGenerate} disabled={!canSubmit} className="text-xs">
           {state.phase === "submitting" ? "Submitting…" : "Generate"}
         </Button>
         <Button
@@ -198,164 +195,196 @@ function RerunPanel({
   );
 }
 
-// ── Image card ────────────────────────────────────────────────────────────────
+// ── Preview dialog ─────────────────────────────────────────────────────────────
 
-function ImageCard({
+function PreviewDialog({
   img,
+  open,
+  onOpenChange,
   onChange,
 }: {
-  img: GeneratedImage;
+  img: GeneratedImage | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onChange: () => void;
 }) {
   const [rerunOpen, setRerunOpen] = useState(false);
 
+  // Reset rerun panel whenever a different image is opened
+  useEffect(() => { setRerunOpen(false); }, [img?.id]);
+
+  if (!img) return null;
+
   function handleStatus(status: ReviewStatus) {
+    if (!img) return;
+    updateImageStatus(img.id, status);
+    onChange();
+    onOpenChange(false);
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl" showCloseButton>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono">{img.salesCode}</span>
+            <span className="text-muted-foreground font-normal">—</span>
+            <span className="font-mono uppercase text-sm">{img.slot}</span>
+            <span className="text-muted-foreground font-normal text-sm">{SLOT_LABEL[img.slot]}</span>
+            <Badge variant="outline" className={cn("ml-auto text-[11px]", STATUS_BADGE[img.status].className)}>
+              {STATUS_BADGE[img.status].label}
+            </Badge>
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* Image */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={img.url}
+          alt={`${img.salesCode} ${img.slot}`}
+          className="w-full rounded-lg object-cover"
+        />
+
+        <p className="text-xs text-muted-foreground">Generated {img.generatedAt}</p>
+
+        {/* Rerun panel */}
+        {rerunOpen && (
+          <RerunPanel
+            salesCode={img.salesCode}
+            slot={img.slot}
+            onDone={() => { setRerunOpen(false); onChange(); onOpenChange(false); }}
+            onCancel={() => setRerunOpen(false)}
+          />
+        )}
+
+        <DialogFooter className="flex-col gap-2 sm:flex-row">
+          {img.status === "pending" && (
+            <>
+              <Button
+                className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                onClick={() => handleStatus("approved")}
+              >
+                Approve
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1 text-destructive border-destructive/40 hover:bg-destructive/10"
+                onClick={() => handleStatus("rejected")}
+              >
+                Reject
+              </Button>
+            </>
+          )}
+          {img.status === "approved" && (
+            <a
+              href={`/upload?salesCode=${img.salesCode}&slot=${img.slot}&url=${encodeURIComponent(img.url)}`}
+              className={cn(buttonVariants(), "flex-1 justify-center")}
+            >
+              Upload to Scaleflex
+            </a>
+          )}
+          <Button
+            variant="outline"
+            className="text-xs"
+            onClick={() => setRerunOpen((v) => !v)}
+          >
+            {rerunOpen ? "Cancel Rerun" : "Rerun"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── List row ──────────────────────────────────────────────────────────────────
+
+function ImageRow({
+  img,
+  onPreview,
+  onChange,
+}: {
+  img: GeneratedImage;
+  onPreview: (img: GeneratedImage) => void;
+  onChange: () => void;
+}) {
+  function handleStatus(status: ReviewStatus, e: React.MouseEvent) {
+    e.stopPropagation();
     updateImageStatus(img.id, status);
     onChange();
   }
 
-  function handleDelete() {
+  function handleDelete(e: React.MouseEvent) {
+    e.stopPropagation();
     deleteImage(img.id);
     onChange();
   }
 
   return (
-    <div className="rounded-xl border bg-card overflow-hidden">
-      {/* Image */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={img.url}
-        alt={`${img.salesCode} ${img.slot}`}
-        className="w-full aspect-square object-cover"
-      />
-
-      <div className="p-3 space-y-3">
-        {/* Meta row */}
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] text-muted-foreground">{img.generatedAt}</span>
-          <Badge variant="outline" className={cn("text-[11px]", STATUS_BADGE[img.status].className)}>
-            {STATUS_BADGE[img.status].label}
-          </Badge>
-        </div>
-
-        {/* Primary actions */}
-        {img.status === "pending" && (
-          <div className="flex gap-1.5">
-            <Button
-              size="sm"
-              className="flex-1 text-xs bg-green-600 hover:bg-green-700 text-white"
-              onClick={() => handleStatus("approved")}
-            >
-              Approve
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="flex-1 text-xs text-destructive border-destructive/40 hover:bg-destructive/10"
-              onClick={() => handleStatus("rejected")}
-            >
-              Reject
-            </Button>
-          </div>
-        )}
-
-        {img.status === "approved" && (
-          <a
-            href={`/upload?salesCode=${img.salesCode}&slot=${img.slot}&url=${encodeURIComponent(img.url)}`}
-            className={cn(buttonVariants({ size: "sm" }), "w-full justify-center text-xs")}
-          >
-            Upload to Scaleflex
-          </a>
-        )}
-
-        {/* Secondary actions row */}
-        <div className="flex gap-1.5">
+    <tr
+      className="border-b last:border-0 hover:bg-muted/40 cursor-pointer transition-colors"
+      onClick={() => onPreview(img)}
+    >
+      <td className="py-3 px-4 font-mono text-sm font-semibold">{img.salesCode}</td>
+      <td className="py-3 px-4 text-xs">
+        <span className="font-mono uppercase font-medium">{img.slot}</span>
+        <span className="text-muted-foreground ml-1.5">— {SLOT_LABEL[img.slot]}</span>
+      </td>
+      <td className="py-3 px-4">
+        <Badge variant="outline" className={cn("text-[11px]", STATUS_BADGE[img.status].className)}>
+          {STATUS_BADGE[img.status].label}
+        </Badge>
+      </td>
+      <td className="py-3 px-4 text-xs text-muted-foreground">{img.generatedAt}</td>
+      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center gap-1.5">
           <Button
             size="sm"
-            variant="outline"
-            className="flex-1 text-xs"
-            onClick={() => setRerunOpen((v) => !v)}
+            variant="ghost"
+            className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+            onClick={(e) => { e.stopPropagation(); onPreview(img); }}
+            title="Preview"
           >
-            {rerunOpen ? "Cancel Rerun" : "Rerun"}
+            <EyeIcon className="size-3.5" />
           </Button>
+          {img.status === "pending" && (
+            <>
+              <Button
+                size="sm"
+                className="text-xs h-7 bg-green-600 hover:bg-green-700 text-white"
+                onClick={(e) => handleStatus("approved", e)}
+              >
+                Approve
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-xs h-7 text-destructive border-destructive/40 hover:bg-destructive/10"
+                onClick={(e) => handleStatus("rejected", e)}
+              >
+                Reject
+              </Button>
+            </>
+          )}
+          {img.status === "approved" && (
+            <a
+              href={`/upload?salesCode=${img.salesCode}&slot=${img.slot}&url=${encodeURIComponent(img.url)}`}
+              className={cn(buttonVariants({ size: "sm" }), "text-xs h-7")}
+              onClick={(e) => e.stopPropagation()}
+            >
+              Upload
+            </a>
+          )}
           <Button
             size="sm"
-            variant="outline"
-            className="text-xs text-muted-foreground hover:text-destructive"
+            variant="ghost"
+            className="text-xs h-7 text-muted-foreground hover:text-destructive"
             onClick={handleDelete}
           >
             Remove
           </Button>
         </div>
-
-        {/* Inline rerun panel */}
-        {rerunOpen && (
-          <RerunPanel
-            salesCode={img.salesCode}
-            slot={img.slot}
-            onDone={() => { setRerunOpen(false); onChange(); }}
-            onCancel={() => setRerunOpen(false)}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Product group ─────────────────────────────────────────────────────────────
-
-function ProductGroup({
-  salesCode,
-  images,
-  onChange,
-}: {
-  salesCode: string;
-  images: GeneratedImage[];
-  onChange: () => void;
-}) {
-  const slots: Slot[] = ["ls1", "ls2", "ls3"];
-  const bySlot = (slot: Slot) => images.filter((i) => i.slot === slot);
-
-  return (
-    <div className="space-y-4">
-      {/* Product header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-sm font-semibold">{salesCode}</span>
-          <Badge variant="secondary" className="text-xs">
-            {images.length} image{images.length !== 1 ? "s" : ""}
-          </Badge>
-        </div>
-        <a
-          href={`/generate?salesCode=${salesCode}`}
-          className={cn(buttonVariants({ variant: "outline", size: "sm" }), "text-xs")}
-        >
-          + New Generation
-        </a>
-      </div>
-
-      {/* Slots */}
-      {slots.map((slot) => {
-        const slotImages = bySlot(slot);
-        if (slotImages.length === 0) return null;
-        return (
-          <div key={slot} className="space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                {slot}
-              </span>
-              <span className="text-xs text-muted-foreground">— {SLOT_LABEL[slot]}</span>
-              <span className="text-xs text-muted-foreground">· {slotImages.length} version{slotImages.length !== 1 ? "s" : ""}</span>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {slotImages.map((img) => (
-                <ImageCard key={img.id} img={img} onChange={onChange} />
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
+      </td>
+    </tr>
   );
 }
 
@@ -363,29 +392,37 @@ function ProductGroup({
 
 export default function ReviewPage() {
   const [images, setImages] = useState<GeneratedImage[]>([]);
+  const [preview, setPreview] = useState<GeneratedImage | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const refresh = useCallback(() => setImages(loadImages()), []);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // Group by salesCode, preserving insertion order
-  const groups = images.reduce<Record<string, GeneratedImage[]>>((acc, img) => {
-    if (!acc[img.salesCode]) acc[img.salesCode] = [];
-    acc[img.salesCode].push(img);
-    return acc;
-  }, {});
+  // Keep preview in sync with latest status after an action
+  useEffect(() => {
+    if (preview) {
+      const updated = images.find((i) => i.id === preview.id);
+      if (updated) setPreview(updated);
+    }
+  }, [images, preview]);
+
+  function openPreview(img: GeneratedImage) {
+    setPreview(img);
+    setPreviewOpen(true);
+  }
 
   const pendingCount = images.filter((i) => i.status === "pending").length;
   const approvedCount = images.filter((i) => i.status === "approved").length;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-8">
+    <div className="max-w-5xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Review</h2>
           <p className="text-muted-foreground mt-1">
-            Approve or reject generated images. Rerun to get a new version.
+            Click a row to preview. Approve or reject from the list or the preview.
           </p>
         </div>
         {images.length > 0 && (
@@ -409,16 +446,40 @@ export default function ReviewPage() {
         </Card>
       )}
 
-      {/* Product groups */}
-      {Object.entries(groups).map(([salesCode, groupImages]) => (
-        <div key={salesCode} className="border rounded-xl p-5 space-y-5">
-          <ProductGroup
-            salesCode={salesCode}
-            images={groupImages}
-            onChange={refresh}
-          />
+      {/* List */}
+      {images.length > 0 && (
+        <div className="rounded-xl border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/50 text-xs text-muted-foreground uppercase tracking-wide">
+                <th className="py-2.5 px-4 text-left font-medium">Sales Code</th>
+                <th className="py-2.5 px-4 text-left font-medium">Slot</th>
+                <th className="py-2.5 px-4 text-left font-medium">Status</th>
+                <th className="py-2.5 px-4 text-left font-medium">Date</th>
+                <th className="py-2.5 px-4 text-left font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {images.map((img) => (
+                <ImageRow
+                  key={img.id}
+                  img={img}
+                  onPreview={openPreview}
+                  onChange={refresh}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
-      ))}
+      )}
+
+      {/* Preview dialog */}
+      <PreviewDialog
+        img={preview}
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        onChange={refresh}
+      />
     </div>
   );
 }

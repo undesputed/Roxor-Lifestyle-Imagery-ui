@@ -35,7 +35,10 @@ export function addImage(image: Omit<GeneratedImage, "id" | "status" | "generate
     ...image,
     id: crypto.randomUUID(),
     status: "pending",
-    generatedAt: new Date().toISOString().split("T")[0],
+    generatedAt: (() => {
+      const d = new Date();
+      return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, "0"), String(d.getDate()).padStart(2, "0")].join("-");
+    })(),
   };
   const existing = loadImages();
   saveImages([newImage, ...existing]);
