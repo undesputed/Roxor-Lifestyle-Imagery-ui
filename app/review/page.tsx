@@ -13,7 +13,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { EyeIcon } from "lucide-react";
+import { DownloadIcon, EyeIcon } from "lucide-react";
 import {
   loadImages,
   addImage,
@@ -286,6 +286,18 @@ function PreviewDialog({
           <Button
             variant="outline"
             className="text-xs"
+            onClick={() => {
+              const a = document.createElement("a");
+              a.href = `/api/download?url=${encodeURIComponent(img.url)}&filename=${img.salesCode}-${img.slot}.png`;
+              a.click();
+            }}
+          >
+            <DownloadIcon className="size-3.5 mr-1.5" />
+            Download
+          </Button>
+          <Button
+            variant="outline"
+            className="text-xs"
             onClick={() => setRerunOpen((v) => !v)}
           >
             {rerunOpen ? "Cancel Rerun" : "Rerun"}
@@ -319,6 +331,13 @@ function ImageRow({
     onChange();
   }
 
+  function handleDownload(e: React.MouseEvent) {
+    e.stopPropagation();
+    const a = document.createElement("a");
+    a.href = `/api/download?url=${encodeURIComponent(img.url)}&filename=${img.salesCode}-${img.slot}.png`;
+    a.click();
+  }
+
   return (
     <tr
       className="border-b last:border-0 hover:bg-muted/40 cursor-pointer transition-colors"
@@ -345,6 +364,15 @@ function ImageRow({
             title="Preview"
           >
             <EyeIcon className="size-3.5" />
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
+            onClick={handleDownload}
+            title="Download"
+          >
+            <DownloadIcon className="size-3.5" />
           </Button>
           {img.status === "pending" && (
             <>

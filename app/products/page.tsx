@@ -135,6 +135,26 @@ function ProductTable({ products, showGenerateButton }: { products: Product[]; s
   );
 }
 
+function filterProducts(products: Product[], query: string) {
+  const trimmed = query.trim();
+  if (!trimmed) return products;
+  const q = trimmed.toLowerCase();
+
+  return products.filter((product) => {
+    const identifier = product.identifier.toLowerCase();
+    const title = (product.title ?? "").toLowerCase();
+    const family = (product.family ?? "").toLowerCase();
+    const colour = (product.colour ?? "").toLowerCase();
+
+    return (
+      identifier.includes(q) ||
+      title.includes(q) ||
+      family.includes(q) ||
+      colour.includes(q)
+    );
+  });
+}
+
 export default function ProductsPage() {
   const [missingProducts, setMissingProducts] = useState<Product[]>([]);
   const [candidateProducts, setCandidateProducts] = useState<Product[]>([]);
@@ -142,6 +162,7 @@ export default function ProductsPage() {
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [errorMissing, setErrorMissing] = useState<string | null>(null);
   const [errorCandidates, setErrorCandidates] = useState<string | null>(null);
+  const [filterQuery, setFilterQuery] = useState("");
 
   const fetchMissing = useCallback(async () => {
     setLoadingMissing(true);
@@ -176,6 +197,9 @@ export default function ProductsPage() {
   // Load missing lifestyle on mount
   useEffect(() => { fetchMissing(); }, [fetchMissing]);
 
+  const filteredMissingProducts = filterProducts(missingProducts, filterQuery);
+  const filteredCandidateProducts = filterProducts(candidateProducts, filterQuery);
+
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
@@ -189,20 +213,31 @@ export default function ProductsPage() {
       </div>
 
       <Tabs defaultValue="missing">
-        <TabsList>
-          <TabsTrigger value="missing">
-            Missing Lifestyle
-            {missingProducts.length > 0 && (
-              <Badge variant="secondary" className="ml-2 text-xs">{missingProducts.length}</Badge>
-            )}
-          </TabsTrigger>
-          <TabsTrigger value="candidates" onClick={() => { if (candidateProducts.length === 0) fetchCandidates(); }}>
-            Dark Grey Candidates
-            {candidateProducts.length > 0 && (
-              <Badge variant="secondary" className="ml-2 text-xs">{candidateProducts.length}</Badge>
-            )}
-          </TabsTrigger>
-        </TabsList>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <TabsList>
+            <TabsTrigger value="missing">
+              Missing Lifestyle
+              {missingProducts.length > 0 && (
+                <Badge variant="secondary" className="ml-2 text-xs">{missingProducts.length}</Badge>
+              )}
+            </TabsTrigger>
+            <TabsTrigger value="candidates" onClick={() => { if (candidateProducts.length === 0) fetchCandidates(); }}>
+              Dark Grey Candidates
+              {candidateProducts.length > 0 && (
+                <Badge variant="secondary" className="ml-2 text-xs">{candidateProducts.length}</Badge>
+              )}
+            </TabsTrigger>
+          </TabsList>
+          <div className="w-full sm:w-64">
+            <input
+              type="text"
+              placeholder="Filter by sales code, title, family, or colour…"
+              value={filterQuery}
+              onChange={(event: React.ChangeEvent<HTMLInputElement>) => setFilterQuery(event.target.value)}
+              className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            />
+          </div>
+        </div>
 
         <TabsContent value="missing" className="mt-4">
           <Card>
@@ -220,7 +255,7 @@ export default function ProductsPage() {
                 </div>
               )}
               {!loadingMissing && !errorMissing && (
-                <ProductTable products={missingProducts} showGenerateButton />
+                <ProductTable products={filteredMissingProducts} showGenerateButton />
               )}
             </CardContent>
           </Card>
@@ -242,7 +277,7 @@ export default function ProductsPage() {
                 </div>
               )}
               {!loadingCandidates && !errorCandidates && (
-                <ProductTable products={candidateProducts} showGenerateButton />
+                <ProductTable products={filteredCandidateProducts} showGenerateButton />
               )}
             </CardContent>
           </Card>

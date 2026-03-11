@@ -7,7 +7,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { addImage } from "@/lib/store";
+import { addImage, findApprovedLs1Url } from "@/lib/store";
 import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
 
 type Slot = "ls1" | "ls2" | "ls3";
@@ -33,6 +33,7 @@ function GenerateForm() {
   const [pollCount, setPollCount] = useState(0);
 
   // Prompt customisation
+  const [ls1AutoFilled, setLs1AutoFilled] = useState(false);
   const [extrasOpen, setExtrasOpen] = useState(false);
   const [heroColour, setHeroColour] = useState("");
   const [heroWidth, setHeroWidth] = useState("");
@@ -80,6 +81,18 @@ function GenerateForm() {
       setStatus("failed");
     }
   }
+
+  // Auto-fill ls1Url from the store when slot=ls2 and salesCode is known
+  useEffect(() => {
+    if (slot !== "ls2") return;
+    const url = findApprovedLs1Url(salesCode.toUpperCase());
+    if (url) {
+      setLs1Url(url);
+      setLs1AutoFilled(true);
+    } else {
+      setLs1AutoFilled(false);
+    }
+  }, [slot, salesCode]);
 
   // Poll for result every 10s
   useEffect(() => {
@@ -174,9 +187,21 @@ function GenerateForm() {
                 className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 placeholder="https://... (URL of the generated ls1 image)"
                 value={ls1Url}
-                onChange={(e) => setLs1Url(e.target.value)}
+                onChange={(e) => { setLs1Url(e.target.value); setLs1AutoFilled(false); }}
               />
-              <p className="text-xs text-muted-foreground">Required so the AI can match the room from the wide shot.</p>
+              {ls1AutoFilled ? (
+                <p className="text-xs text-green-600 dark:text-green-400">
+                  Auto-filled from your approved LS1 for {salesCode}.
+                </p>
+              ) : salesCode.trim() ? (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  No approved LS1 found for {salesCode} — generate and approve an LS1 first, or paste the URL manually.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Required so the AI can match the room from the wide shot.
+                </p>
+              )}
             </div>
           )}
 
