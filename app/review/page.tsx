@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -209,9 +210,12 @@ function PreviewDialog({
   onChange: () => void;
 }) {
   const [rerunOpen, setRerunOpen] = useState(false);
-
-  // Reset rerun panel whenever a different image is opened
-  useEffect(() => { setRerunOpen(false); }, [img?.id]);
+  // Track last-seen img.id to reset rerun panel when image changes (during render, not in effect)
+  const [lastImgId, setLastImgId] = useState<string | undefined>(undefined);
+  if (img?.id !== lastImgId) {
+    setLastImgId(img?.id);
+    setRerunOpen(false);
+  }
 
   if (!img) return null;
 
@@ -419,24 +423,20 @@ function ImageRow({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ReviewPage() {
-  const [images, setImages] = useState<GeneratedImage[]>([]);
-  const [preview, setPreview] = useState<GeneratedImage | null>(null);
+  // Lazy init reads localStorage once on mount (client-side only)
+  const [images, setImages] = useState<GeneratedImage[]>(() => {
+    if (typeof window === "undefined") return [];
+    return loadImages();
+  });
+  // Track the ID of the selected image; derive the object from images so it stays in sync
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const preview = images.find((i) => i.id === previewId) ?? null;
   const [previewOpen, setPreviewOpen] = useState(false);
 
   const refresh = useCallback(() => setImages(loadImages()), []);
 
-  useEffect(() => { refresh(); }, [refresh]);
-
-  // Keep preview in sync with latest status after an action
-  useEffect(() => {
-    if (preview) {
-      const updated = images.find((i) => i.id === preview.id);
-      if (updated) setPreview(updated);
-    }
-  }, [images, preview]);
-
   function openPreview(img: GeneratedImage) {
-    setPreview(img);
+    setPreviewId(img.id);
     setPreviewOpen(true);
   }
 
@@ -467,9 +467,9 @@ export default function ReviewPage() {
         <Card>
           <CardContent className="pt-6 space-y-3">
             <p className="text-sm text-muted-foreground">No images in the review queue yet.</p>
-            <a href="/generate" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
+            <Link href="/generate" className={cn(buttonVariants({ variant: "outline", size: "sm" }))}>
               Go to Generate
-            </a>
+            </Link>
           </CardContent>
         </Card>
       )}

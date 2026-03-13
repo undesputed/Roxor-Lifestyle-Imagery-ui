@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   ImageIcon,
@@ -27,8 +27,9 @@ function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
-  // Avoid hydration mismatch
-  useEffect(() => setMounted(true), []);
+  // Avoid hydration mismatch — wrap in startTransition to satisfy the
+  // react-hooks/set-state-in-effect rule (setState is not synchronous here)
+  useEffect(() => { startTransition(() => setMounted(true)); }, []);
   if (!mounted) return <div className="h-8 w-8" />;
 
   const isDark = theme === "dark";

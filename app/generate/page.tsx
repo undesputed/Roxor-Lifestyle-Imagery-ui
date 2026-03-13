@@ -1,425 +1,263 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useState } from "react";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
-import { addImage, findApprovedLs1Url } from "@/lib/store";
-import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { loadJobSets, deriveJobSetStatus, deleteJobSet } from "@/lib/store";
+import type { JobSet } from "@/lib/types";
+import { Trash2, ChevronRight, Zap } from "lucide-react";
 
-type Slot = "ls1" | "ls2" | "ls3";
-type Resolution = "1K" | "2K" | "4K";
-type JobStatus = "idle" | "submitting" | "polling" | "done" | "failed";
+// ─── Status badge ─────────────────────────────────────────────────────────────
 
-const SLOT_LABELS: Record<Slot, string> = {
-  ls1: "Wide Room Shot",
-  ls2: "Close-up Hero",
-  ls3: "Detail / Vignette",
+type OverallStatus = ReturnType<typeof deriveJobSetStatus>;
+
+const STATUS_LABEL: Record<OverallStatus, string> = {
+  complete: "Complete",
+  failed: "Failed",
+  in_progress: "In Progress",
+  idle: "Queued",
 };
 
-function GenerateForm() {
-  const searchParams = useSearchParams();
-  const [salesCode, setSalesCode] = useState(searchParams.get("salesCode") ?? "");
-  const [slot, setSlot] = useState<Slot>("ls1");
-  const [resolution, setResolution] = useState<Resolution>("2K");
-  const [ls1Url, setLs1Url] = useState("");
-  const [status, setStatus] = useState<JobStatus>("idle");
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const [resultUrl, setResultUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [pollCount, setPollCount] = useState(0);
+const STATUS_VARIANT: Record<OverallStatus, string> = {
+  complete: "bg-green-100 text-green-800 border-green-200 dark:bg-green-900 dark:text-green-200",
+  failed: "bg-red-100 text-red-800 border-red-200 dark:bg-red-900 dark:text-red-200",
+  in_progress: "bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900 dark:text-blue-200",
+  idle: "bg-muted text-muted-foreground",
+};
 
-  // Prompt customisation
-  const [ls1AutoFilled, setLs1AutoFilled] = useState(false);
-  const [extrasOpen, setExtrasOpen] = useState(false);
-  const [heroColour, setHeroColour] = useState("");
-  const [heroWidth, setHeroWidth] = useState("");
-  const [heroHeight, setHeroHeight] = useState("");
-  const [roomStyle, setRoomStyle] = useState("");
-  const [tileStyle, setTileStyle] = useState("");
-  const [extraStyling, setExtraStyling] = useState("");
-  const [customNotes, setCustomNotes] = useState("");
+// ─── Slot progress dots ───────────────────────────────────────────────────────
 
-  const canSubmit = salesCode.trim() !== "" && (slot !== "ls2" || ls1Url.trim() !== "");
-
-  async function handleGenerate() {
-    setStatus("submitting");
-    setError(null);
-    setResultUrl(null);
-    setTaskId(null);
-    setPollCount(0);
-
-    try {
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          salesCode: salesCode.toUpperCase(),
-          slot,
-          resolution,
-          ls1Url: ls1Url || null,
-          extras: {
-            heroColour: heroColour.trim() || null,
-            heroWidth: heroWidth ? parseInt(heroWidth) : null,
-            heroHeight: heroHeight ? parseInt(heroHeight) : null,
-            roomStyle: roomStyle.trim() || null,
-            tileStyle: tileStyle.trim() || null,
-            extraStyling: extraStyling.trim() || null,
-            customNotes: customNotes.trim() || null,
-          },
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail ?? data.error ?? "Generation failed");
-      setTaskId(data.taskId);
-      setStatus("polling");
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Unknown error");
-      setStatus("failed");
-    }
-  }
-
-  // Auto-fill ls1Url from the store when slot=ls2 and salesCode is known
-  useEffect(() => {
-    if (slot !== "ls2") return;
-    const url = findApprovedLs1Url(salesCode.toUpperCase());
-    if (url) {
-      setLs1Url(url);
-      setLs1AutoFilled(true);
-    } else {
-      setLs1AutoFilled(false);
-    }
-  }, [slot, salesCode]);
-
-  // Poll for result every 10s
-  useEffect(() => {
-    if (status !== "polling" || !taskId) return;
-    const interval = setInterval(async () => {
-      setPollCount((n) => n + 1);
-      try {
-        const res = await fetch(`/api/generate/${taskId}/status`);
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          setError((errData as { detail?: string }).detail ?? `Status check failed (${res.status})`);
-          setStatus("failed");
-          clearInterval(interval);
-          return;
-        }
-        const data = await res.json();
-
-        if (data.state === "success" && data.resultUrl) {
-          setResultUrl(data.resultUrl);
-          setStatus("done");
-          addImage({ salesCode: salesCode.toUpperCase(), slot, url: data.resultUrl });
-          clearInterval(interval);
-        } else if (data.state === "fail") {
-          setError(data.failMsg ?? "Generation failed");
-          setStatus("failed");
-          clearInterval(interval);
-        } else if (data.state && !["waiting", "processing", "pending", "queued"].includes(data.state)) {
-          setError(`Unexpected generation state: ${data.state}`);
-          setStatus("failed");
-          clearInterval(interval);
-        }
-      } catch {
-        // keep polling on transient network error
-      }
-    }, 10000);
-    return () => clearInterval(interval);
-  }, [status, taskId, salesCode, slot]);
+function SlotDots({ jobSet }: { jobSet: JobSet }) {
+  const slots = [
+    { label: "LS1", job: jobSet.jobs.ls1 },
+    { label: "LS2", job: jobSet.jobs.ls2 },
+    { label: "LS3", job: jobSet.jobs.ls3 },
+  ] as const;
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Generate</h2>
-        <p className="text-muted-foreground mt-1">
-          Submit a product to kie.ai Nano Banana Pro for lifestyle image generation.
-        </p>
-      </div>
+    <div className="flex items-center gap-1.5">
+      {slots.map(({ label, job }) => {
+        const color =
+          job.status === "success"
+            ? "bg-green-500"
+            : job.status === "failed"
+            ? "bg-red-500"
+            : job.status === "polling" || job.status === "submitted"
+            ? "bg-blue-400 animate-pulse"
+            : "bg-muted-foreground/20"; // idle / not yet started
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-semibold">Job Settings</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          {/* Sales Code */}
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium">Sales Code</label>
-            <input
-              className="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
-              placeholder="e.g. BALARN1405AH017"
-              value={salesCode}
-              onChange={(e) => setSalesCode(e.target.value.toUpperCase())}
-            />
+        return (
+          <div key={label} className="flex flex-col items-center gap-0.5">
+            <div className={`size-2.5 rounded-full ${color}`} />
+            <span className="text-[9px] text-muted-foreground font-mono">{label}</span>
           </div>
-
-          {/* Slot */}
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium">Lifestyle Slot</label>
-            <div className="flex gap-2 flex-wrap">
-              {(["ls1", "ls2", "ls3"] as Slot[]).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setSlot(s)}
-                  className={`px-4 py-2 rounded-md text-sm border transition-colors ${
-                    slot === s
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "border-border text-muted-foreground hover:bg-muted"
-                  }`}
-                >
-                  <span className="font-mono text-xs">{s.toUpperCase()}</span>
-                  <span className="ml-2">{SLOT_LABELS[s]}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* ls1 URL — only required for ls2 */}
-          {slot === "ls2" && (
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">
-                LS1 Wide Shot URL <span className="text-destructive">*</span>
-              </label>
-              <input
-                className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="https://... (URL of the generated ls1 image)"
-                value={ls1Url}
-                onChange={(e) => { setLs1Url(e.target.value); setLs1AutoFilled(false); }}
-              />
-              {ls1AutoFilled ? (
-                <p className="text-xs text-green-600 dark:text-green-400">
-                  Auto-filled from your approved LS1 for {salesCode}.
-                </p>
-              ) : salesCode.trim() ? (
-                <p className="text-xs text-amber-600 dark:text-amber-400">
-                  No approved LS1 found for {salesCode} — generate and approve an LS1 first, or paste the URL manually.
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Required so the AI can match the room from the wide shot.
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Resolution */}
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium">Resolution</label>
-            <div className="flex gap-2">
-              {(["1K", "2K", "4K"] as Resolution[]).map((r) => (
-                <button
-                  key={r}
-                  onClick={() => setResolution(r)}
-                  className={`px-4 py-2 rounded-md text-sm border transition-colors ${
-                    resolution === r
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "border-border text-muted-foreground hover:bg-muted"
-                  }`}
-                >
-                  {r}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">Higher resolution uses more kie.ai credits.</p>
-          </div>
-
-          {/* Customise Prompt */}
-          <div className="border rounded-lg overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setExtrasOpen((v) => !v)}
-              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/50 transition-colors"
-            >
-              <span>Customise Prompt</span>
-              {extrasOpen ? <ChevronUpIcon className="size-4 text-muted-foreground" /> : <ChevronDownIcon className="size-4 text-muted-foreground" />}
-            </button>
-
-            {extrasOpen && (
-              <div className="border-t px-4 py-4 space-y-4 bg-muted/20">
-                <p className="text-xs text-muted-foreground">
-                  These fields are merged into the base prompt. Leave blank to use the default.
-                </p>
-
-                {/* Hero description */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium">Product Description</label>
-                  <input
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                    placeholder="e.g. matt black gloss floor-standing vanity with chrome bar handles and white basin"
-                    value={heroColour}
-                    onChange={(e) => setHeroColour(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">Overrides the default product colour and finish description.</p>
-                </div>
-
-                {/* Dimensions */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium">Product Dimensions (mm)</label>
-                  <div className="flex gap-3">
-                    <div className="flex-1 space-y-1">
-                      <span className="text-xs text-muted-foreground">Width</span>
-                      <input
-                        type="number"
-                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                        placeholder="810"
-                        value={heroWidth}
-                        onChange={(e) => setHeroWidth(e.target.value)}
-                      />
-                    </div>
-                    <div className="flex-1 space-y-1">
-                      <span className="text-xs text-muted-foreground">Height</span>
-                      <input
-                        type="number"
-                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                        placeholder="840"
-                        value={heroHeight}
-                        onChange={(e) => setHeroHeight(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* LS1-specific fields */}
-                {slot === "ls1" && (
-                  <>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-medium">Room Style</label>
-                      <input
-                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                        placeholder="e.g. contemporary minimalist, industrial loft, coastal, traditional"
-                        value={roomStyle}
-                        onChange={(e) => setRoomStyle(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-medium">Wall & Floor Tiles</label>
-                      <input
-                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                        placeholder="e.g. dark charcoal large-format matte porcelain, herringbone white metro tile"
-                        value={tileStyle}
-                        onChange={(e) => setTileStyle(e.target.value)}
-                      />
-                    </div>
-                  </>
-                )}
-
-                {/* Extra scene elements */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium">Extra Scene Elements</label>
-                  <input
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                    placeholder="e.g. add a freestanding bath on the back wall, replace towel rail with a radiator"
-                    value={extraStyling}
-                    onChange={(e) => setExtraStyling(e.target.value)}
-                  />
-                </div>
-
-                {/* Custom notes */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium">Additional Notes</label>
-                  <textarea
-                    rows={3}
-                    className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
-                    placeholder="Any additional instructions appended to the end of the prompt…"
-                    value={customNotes}
-                    onChange={(e) => setCustomNotes(e.target.value)}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          <Button
-            onClick={handleGenerate}
-            disabled={!canSubmit || status === "submitting" || status === "polling"}
-          >
-            {status === "submitting"
-              ? "Submitting..."
-              : status === "polling"
-              ? `Generating... (${pollCount * 10}s)`
-              : "Generate Image"}
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Polling state */}
-      {status === "polling" && (
-        <Card>
-          <CardContent className="pt-6 space-y-3">
-            <div className="flex items-center gap-2">
-              <Badge variant="secondary">Generating</Badge>
-              <span className="text-sm text-muted-foreground">
-                kie.ai is processing your image (~60–100s at 1K)
-              </span>
-            </div>
-            <Skeleton className="w-full aspect-square rounded-md" />
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Done */}
-      {status === "done" && resultUrl && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-semibold">Generated Image</CardTitle>
-              <Badge className="bg-green-600 text-white">Done</Badge>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={resultUrl} alt="Generated lifestyle image" className="w-full rounded-md border" />
-            <p className="text-xs text-muted-foreground">
-              Image saved to the Review queue automatically.
-            </p>
-            <div className="flex gap-2">
-              <a
-                href="/review"
-                className={cn(buttonVariants({ size: "sm" }))}
-              >
-                Go to Review
-              </a>
-              <a
-                href={resultUrl}
-                download
-                target="_blank"
-                rel="noreferrer"
-                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-              >
-                Download
-              </a>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Failed */}
-      {status === "failed" && error && (
-        <Card className="border-destructive/50">
-          <CardContent className="pt-6">
-            <p className="text-sm text-destructive font-medium">Generation failed</p>
-            <p className="text-sm text-muted-foreground mt-1">{error}</p>
-            <button
-              onClick={() => setStatus("idle")}
-              className="mt-3 text-sm underline text-muted-foreground"
-            >
-              Try again
-            </button>
-          </CardContent>
-        </Card>
-      )}
+        );
+      })}
     </div>
   );
 }
 
-export default function GeneratePage() {
+// ─── Empty state ──────────────────────────────────────────────────────────────
+
+function EmptyState() {
   return (
-    <Suspense>
-      <GenerateForm />
-    </Suspense>
+    <div className="flex flex-col items-center justify-center py-20 text-center">
+      <div className="rounded-full bg-muted p-4 mb-4">
+        <Zap className="size-8 text-muted-foreground" />
+      </div>
+      <h3 className="text-lg font-semibold">No generations yet</h3>
+      <p className="text-muted-foreground text-sm mt-1 max-w-xs">
+        Go to the Products page, select products, and click{" "}
+        <strong>Batch Generate</strong> — or use the{" "}
+        <strong>Generate</strong> button on any product row.
+      </p>
+      <Link href="/products" className="mt-4">
+        <Button variant="outline" size="sm">
+          Go to Products
+        </Button>
+      </Link>
+    </div>
+  );
+}
+
+// ─── Queue row ────────────────────────────────────────────────────────────────
+
+function QueueRow({
+  jobSet,
+  onDelete,
+}: {
+  jobSet: JobSet;
+  onDelete: (id: string) => void;
+}) {
+  const overallStatus = deriveJobSetStatus(jobSet);
+  const createdAt = new Date(jobSet.createdAt);
+  const timeAgo = formatTimeAgo(createdAt);
+  const companionCount = jobSet.jobs.companions.length;
+  const companionsDone = jobSet.jobs.companions.filter(
+    (c) => c.status === "success"
+  ).length;
+
+  return (
+    <div className="flex items-center gap-4 px-4 py-3 rounded-lg border bg-card hover:bg-muted/30 transition-colors group">
+      {/* Slot progress dots */}
+      <SlotDots jobSet={jobSet} />
+
+      {/* Main info */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-mono text-sm font-semibold">{jobSet.salesCode}</span>
+          <Badge
+            variant="outline"
+            className={`text-xs ${STATUS_VARIANT[overallStatus]}`}
+          >
+            {STATUS_LABEL[overallStatus]}
+          </Badge>
+          <span className="text-xs text-muted-foreground">{jobSet.resolution}</span>
+        </div>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Started {timeAgo}
+          {companionCount > 0 && (
+            <> · {companionsDone}/{companionCount} companions done</>
+          )}
+        </p>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            onDelete(jobSet.jobSetId);
+          }}
+          className="p-1.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
+          title="Remove from queue"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
+        <Link
+          href={`/generate/${jobSet.jobSetId}`}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          View details
+          <ChevronRight className="size-3.5" />
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatTimeAgo(date: Date): string {
+  const diffMs = Date.now() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60_000);
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  return `${Math.floor(diffHr / 24)}d ago`;
+}
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
+
+export default function GeneratePage() {
+  // Lazy initializer reads localStorage exactly once on mount (client-side only)
+  const [jobSets, setJobSets] = useState<JobSet[]>(() => {
+    if (typeof window === "undefined") return [];
+    return loadJobSets();
+  });
+  const [filter, setFilter] = useState<"all" | "in_progress" | "complete" | "failed">(
+    "all"
+  );
+
+  function handleDelete(id: string) {
+    deleteJobSet(id);
+    setJobSets(loadJobSets());
+  }
+
+  const filtered =
+    filter === "all"
+      ? jobSets
+      : jobSets.filter((s) => deriveJobSetStatus(s) === filter);
+
+  const counts = {
+    all: jobSets.length,
+    in_progress: jobSets.filter((s) => deriveJobSetStatus(s) === "in_progress").length,
+    complete: jobSets.filter((s) => deriveJobSetStatus(s) === "complete").length,
+    failed: jobSets.filter((s) => deriveJobSetStatus(s) === "failed").length,
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-semibold tracking-tight">Generation Queue</h2>
+          <p className="text-muted-foreground mt-1">
+            Track all active and completed generation jobs.
+          </p>
+        </div>
+        {jobSets.length > 0 && (
+          <Link href="/products">
+            <Button size="sm" variant="outline" className="gap-1.5">
+              <Zap className="size-3.5" />
+              New Generation
+            </Button>
+          </Link>
+        )}
+      </div>
+
+      {jobSets.length === 0 ? (
+        <EmptyState />
+      ) : (
+        <>
+          {/* Filter tabs */}
+          <div className="flex items-center gap-1 flex-wrap">
+            {(["all", "in_progress", "complete", "failed"] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFilter(f)}
+                className={`px-3 py-1.5 rounded-md text-sm transition-colors ${
+                  filter === f
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                {f === "all"
+                  ? "All"
+                  : f === "in_progress"
+                  ? "In Progress"
+                  : f.charAt(0).toUpperCase() + f.slice(1)}{" "}
+                {counts[f] > 0 && (
+                  <span className="ml-1 text-xs opacity-70">({counts[f]})</span>
+                )}
+              </button>
+            ))}
+          </div>
+
+          {/* Queue list */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-semibold">
+                {filtered.length} job{filtered.length !== 1 ? "s" : ""}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {filtered.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-2">
+                  No jobs match this filter.
+                </p>
+              ) : (
+                filtered.map((set) => (
+                  <QueueRow key={set.jobSetId} jobSet={set} onDelete={handleDelete} />
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
   );
 }
