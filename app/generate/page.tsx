@@ -5,8 +5,8 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { loadJobSets, deriveJobSetStatus, deleteJobSet, addJobSet, subscribeStore } from "@/lib/store";
-import type { JobSet, SingleGenerateResponse } from "@/lib/types";
+import { loadJobSets, deriveJobSetStatus, deleteJobSet, addJobSet, subscribeStore, updateSlotJob } from "@/lib/store";
+import type { JobSet, SingleGenerateResponse, ExecutionStatusResponse } from "@/lib/types";
 import { Trash2, ChevronRight, Zap, Clock, Search, X, RotateCcw, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -302,6 +302,51 @@ export default function GeneratePage() {
   useEffect(() => {
     setJobSets(loadJobSets());
     return subscribeStore(() => setJobSets(loadJobSets()));
+  }, []);
+
+  // ── Background status refresh ──────────────────────────────────────────────
+  // On mount (page refresh) and every 30s, check the execution status of all
+  // in-progress jobs so the list stays accurate without visiting the detail page.
+  useEffect(() => {
+    async function refreshInProgress() {
+      const running = loadJobSets().filter(
+        (s) => deriveJobSetStatus(s) === "in_progress" && s.executionArn
+      );
+      await Promise.allSettled(
+        running.map(async (jobSet) => {
+          try {
+            const encoded = encodeURIComponent(jobSet.executionArn!);
+            const res = await fetch(`/api/generate/execution-status/${encoded}`);
+            if (!res.ok) return;
+            const data: ExecutionStatusResponse = await res.json();
+
+            if (data.executionStatus === "SUCCEEDED") {
+              (["ls1", "ls2", "ls3"] as const).forEach((slot) => {
+                updateSlotJob(jobSet.jobSetId, slot, {
+                  status:    "success",
+                  resultUrl: data.slots[slot].resultUrl,
+                });
+              });
+            } else if (data.executionStatus === "FAILED") {
+              const cause = data.cause ?? data.error ?? "Pipeline failed";
+              (["ls1", "ls2", "ls3"] as const).forEach((slot) => {
+                updateSlotJob(jobSet.jobSetId, slot, {
+                  status:  "failed",
+                  failMsg: cause,
+                });
+              });
+            }
+            // RUNNING → nothing to update yet
+          } catch {
+            // network error — skip silently, will retry on next interval
+          }
+        })
+      );
+    }
+
+    refreshInProgress(); // immediate check on mount / refresh
+    const id = setInterval(refreshInProgress, 30_000);
+    return () => clearInterval(id);
   }, []);
 
   const [statusFilter, setStatusFilter] = useState<"all" | "in_progress" | "complete" | "failed">("all");
