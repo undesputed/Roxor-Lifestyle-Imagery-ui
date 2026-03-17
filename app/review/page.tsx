@@ -20,18 +20,18 @@ import {
   addImage,
   updateImageStatus,
   deleteImage,
-  findApprovedLs1Url,
   type GeneratedImage,
   type ReviewStatus,
   type Slot,
 } from "@/lib/store";
+import type { ExecutionStatusResponse } from "@/lib/types";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type RerunState =
   | { phase: "idle" }
   | { phase: "submitting" }
-  | { phase: "polling"; taskId: string; elapsed: number }
+  | { phase: "polling"; executionArn: string; elapsed: number }
   | { phase: "done" }
   | { phase: "failed"; error: string };
 
@@ -63,25 +63,21 @@ function RerunPanel({
   onCancel: () => void;
 }) {
   const [resolution, setResolution] = useState<"1K" | "2K" | "4K">("2K");
-  const [ls1Url, setLs1Url] = useState(() =>
-    slot === "ls2" ? (findApprovedLs1Url(salesCode) ?? "") : ""
-  );
   const [state, setState] = useState<RerunState>({ phase: "idle" });
 
   const isActive = state.phase === "submitting" || state.phase === "polling" || state.phase === "done";
-  const canSubmit = !isActive && (slot !== "ls2" || ls1Url.trim() !== "");
 
   async function handleGenerate() {
     setState({ phase: "submitting" });
     try {
-      const res = await fetch("/api/generate", {
+      const res = await fetch("/api/generate/single", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ salesCode, slot, resolution, ls1Url: ls1Url || null }),
+        body: JSON.stringify({ salesCode, resolution }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail ?? "Generation failed");
-      setState({ phase: "polling", taskId: data.taskId, elapsed: 0 });
+      setState({ phase: "polling", executionArn: data.executionArn, elapsed: 0 });
     } catch (e: unknown) {
       setState({ phase: "failed", error: e instanceof Error ? e.message : "Unknown error" });
     }
@@ -89,27 +85,32 @@ function RerunPanel({
 
   useEffect(() => {
     if (state.phase !== "polling") return;
+    const { executionArn } = state;
     const interval = setInterval(async () => {
       setState((s) => s.phase === "polling" ? { ...s, elapsed: s.elapsed + 10 } : s);
       try {
-        const res = await fetch(`/api/generate/${state.taskId}/status`);
+        const encoded = encodeURIComponent(executionArn);
+        const res = await fetch(`/api/generate/execution-status/${encoded}`);
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
           setState({ phase: "failed", error: (errData as { detail?: string }).detail ?? `Status check failed (${res.status})` });
           clearInterval(interval);
           return;
         }
-        const data = await res.json();
-        if (data.state === "success" && data.resultUrl) {
-          addImage({ salesCode, slot, url: data.resultUrl });
+        const data: ExecutionStatusResponse = await res.json();
+        if (data.executionStatus === "SUCCEEDED") {
+          // Add all slots that completed to localStorage
+          (["ls1", "ls2", "ls3"] as Slot[]).forEach((s) => {
+            const slotData = data.slots[s];
+            if (slotData?.resultUrl) {
+              addImage({ salesCode, slot: s, url: slotData.resultUrl });
+            }
+          });
           setState({ phase: "done" });
           clearInterval(interval);
           setTimeout(onDone, 800);
-        } else if (data.state === "fail") {
-          setState({ phase: "failed", error: data.failMsg ?? "Generation failed" });
-          clearInterval(interval);
-        } else if (data.state && !["waiting", "processing", "pending", "queued"].includes(data.state)) {
-          setState({ phase: "failed", error: `Unexpected state: ${data.state}` });
+        } else if (data.executionStatus === "FAILED") {
+          setState({ phase: "failed", error: data.error ?? data.cause ?? "Generation failed" });
           clearInterval(interval);
         }
       } catch {
@@ -117,7 +118,7 @@ function RerunPanel({
       }
     }, 10000);
     return () => clearInterval(interval);
-  }, [state, salesCode, slot, onDone]);
+  }, [state, salesCode, onDone]);
 
   return (
     <div className="rounded-lg border bg-muted/50 p-4 space-y-4">
@@ -125,21 +126,9 @@ function RerunPanel({
         Rerun — {slot.toUpperCase()} · {salesCode}
       </p>
 
-      {slot === "ls2" && (
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium">LS1 Wide Shot URL</label>
-          {ls1Url && (
-            <p className="text-[11px] text-green-600 dark:text-green-400">Auto-filled from approved LS1</p>
-          )}
-          <input
-            className="w-full rounded-md border bg-background px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-ring"
-            placeholder="https://... (LS1 image URL)"
-            value={ls1Url}
-            onChange={(e) => setLs1Url(e.target.value)}
-            disabled={state.phase !== "idle"}
-          />
-        </div>
-      )}
+      <p className="text-[11px] text-muted-foreground">
+        Starts a new pipeline execution for all 3 slots (LS1 → LS2 → LS3). All results will be added to the review queue.
+      </p>
 
       <div className="space-y-1.5">
         <label className="text-xs font-medium">Resolution</label>
@@ -172,14 +161,14 @@ function RerunPanel({
         </div>
       )}
       {state.phase === "done" && (
-        <p className="text-xs text-green-600 dark:text-green-400 font-medium">Done — new image added to queue</p>
+        <p className="text-xs text-green-600 dark:text-green-400 font-medium">Done — new images added to review queue</p>
       )}
       {state.phase === "failed" && (
         <p className="text-xs text-destructive">{state.error}</p>
       )}
 
       <div className="flex gap-2">
-        <Button size="sm" onClick={handleGenerate} disabled={!canSubmit} className="text-xs">
+        <Button size="sm" onClick={handleGenerate} disabled={isActive} className="text-xs">
           {state.phase === "submitting" ? "Submitting…" : "Generate"}
         </Button>
         <Button

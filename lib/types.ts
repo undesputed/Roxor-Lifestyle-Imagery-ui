@@ -33,7 +33,7 @@ export type CompanionJob = SlotJob & {
 // ─── Job set — one full pipeline run for a single product ────────────────────
 
 export type JobSet = {
-  /** UUID created on the FE when the job set is first submitted */
+  /** UUID created when the job set is first submitted */
   jobSetId: string;
   /** The hero product being generated (e.g. "BALARN1405AH018") */
   salesCode: string;
@@ -41,10 +41,15 @@ export type JobSet = {
   createdAt: string;
   /** Resolution used across all slots */
   resolution: Resolution;
-  /** The four generation tracks */
+  /**
+   * Step Functions execution ARN — present for jobs started via the AWS
+   * Lambda backend. Used to poll GET /generate/execution-status/{arn}.
+   */
+  executionArn?: string;
+  /** The three generation tracks + optional companion cutouts */
   jobs: {
     ls1: SlotJob;
-    ls2: SlotJob;   // starts as { taskId: null, status: "idle" }
+    ls2: SlotJob;
     ls3: SlotJob;
     companions: CompanionJob[];
   };
@@ -52,38 +57,49 @@ export type JobSet = {
 
 // ─── BE response shapes ───────────────────────────────────────────────────────
 
-/** Response from POST /generate/single */
+/**
+ * Response from POST /generate/single (AWS Lambda — 202 Accepted).
+ * The frontend stores executionArn in the JobSet and polls
+ * GET /generate/execution-status/{executionArn} to track progress.
+ */
 export type SingleGenerateResponse = {
   salesCode: string;
   jobSetId: string;
-  jobs: {
-    ls1: Pick<SlotJob, "taskId" | "status">;
-    ls2: Pick<SlotJob, "taskId" | "status">;
-    ls3: Pick<SlotJob, "taskId" | "status">;
-    companions: Array<{ salesCode: string; taskId: string | null; status: SlotStatus }>;
-  };
+  executionArn: string;
 };
 
-/** Response from POST /generate/batch */
-export type BatchGenerateResponse = {
-  products: SingleGenerateResponse[];
-};
-
-/** Response from GET /generate/{taskId}/status */
-export type JobStatusResponse = {
-  state: "waiting" | "processing" | "pending" | "queued" | "success" | "fail" | string;
-  taskId: string;
-  resultUrl?: string;
-  allUrls?: string[];
-  failCode?: string;
-  failMsg?: string;
-};
-
-/** Response from POST /generate/trigger-ls2 */
-export type TriggerLs2Response = {
-  taskId: string;
+/**
+ * Response from GET /generate/execution-status/{executionArn}.
+ * Translates a Step Functions execution state into a FE-friendly shape.
+ *
+ * RUNNING   — pipeline still in progress; slots show "pending"
+ * SUCCEEDED — all 3 slots completed; resultUrls are populated
+ * FAILED    — pipeline error; error + cause fields are set
+ */
+export type ExecutionStatusResponse = {
   salesCode: string;
-  slot: "ls2";
+  jobSetId: string;
+  executionArn: string;
+  executionStatus: "RUNNING" | "SUCCEEDED" | "FAILED";
+  slots: {
+    ls1: { status: "pending" | "success" | "failed"; resultUrl?: string };
+    ls2: { status: "pending" | "success" | "failed"; resultUrl?: string };
+    ls3: { status: "pending" | "success" | "failed"; resultUrl?: string };
+  };
+  /** Present when executionStatus is "FAILED" */
+  error?: string;
+  cause?: string;
+};
+
+/**
+ * Response from POST /generate/batch (202 — all PENDING products queued in BE).
+ * The backend scans DynamoDB for PENDING products and starts a Step Functions
+ * execution for each. Returns immediately; no FE polling required.
+ */
+export type BatchGenerateAllResponse = {
+  submitted: number;  // executions successfully started
+  skipped:   number;  // already GENERATING or GENERATED — skipped
+  failed:    number;  // failed to start (partial failure)
 };
 
 /** Response from POST /sync/akeneo (202 — job started in background) */

@@ -10,8 +10,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import { addJobSet } from "@/lib/store";
-import type { JobSet, SingleGenerateResponse, SyncAkeneoResponse, SyncStatusResponse } from "@/lib/types";
-import { RefreshCw, Zap, CheckSquare, Square, Loader2 } from "lucide-react";
+import type { JobSet, SingleGenerateResponse, SyncAkeneoResponse, SyncStatusResponse, BatchGenerateAllResponse } from "@/lib/types";
+import { RefreshCw, Zap, CheckSquare, Square, Loader2, Play } from "lucide-react";
 
 type GenerationStatus = "PENDING" | "GENERATING" | "GENERATED";
 
@@ -288,13 +288,28 @@ function ProductTable({
   );
 }
 
-// ─── Filter helper ────────────────────────────────────────────────────────────
+// ─── Filter helpers ───────────────────────────────────────────────────────────
 
-function filterProducts(products: Product[], query: string) {
+type StatusFilter = "all" | "PENDING" | "GENERATING" | "GENERATED";
+
+const STATUS_FILTER_LABELS: Record<StatusFilter, string> = {
+  all:        "All",
+  PENDING:    "Not Generated",
+  GENERATING: "Generating",
+  GENERATED:  "Generated",
+};
+
+function filterProducts(products: Product[], query: string, statusFilter: StatusFilter) {
+  let filtered = products;
+
+  if (statusFilter !== "all") {
+    filtered = filtered.filter((p) => p.generationStatus === statusFilter);
+  }
+
   const trimmed = query.trim();
-  if (!trimmed) return products;
+  if (!trimmed) return filtered;
   const q = trimmed.toLowerCase();
-  return products.filter((product) =>
+  return filtered.filter((product) =>
     [product.identifier, product.title, product.family, product.colour]
       .map((v) => (v ?? "").toLowerCase())
       .some((v) => v.includes(q))
@@ -313,6 +328,7 @@ export default function ProductsPage() {
   const [errorMissing, setErrorMissing] = useState<string | null>(null);
   const [errorCandidates, setErrorCandidates] = useState<string | null>(null);
   const [filterQuery, setFilterQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
   // Selection state (only for Missing Lifestyle tab)
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
@@ -323,6 +339,7 @@ export default function ProductsPage() {
   // Sync + batch feedback banners
   const [syncBanner, setSyncBanner] = useState<BannerState>({ type: "idle" });
   const [batchBanner, setBatchBanner] = useState<BannerState>({ type: "idle" });
+  const [processAllBanner, setProcessAllBanner] = useState<BannerState>({ type: "idle" });
 
   // ── Data fetching ────────────────────────────────────────────────────────
 
@@ -337,11 +354,31 @@ export default function ProductsPage() {
           (data as { detail?: string }).detail ?? `Request failed (${res.status})`
         );
       setMissingProducts(data.products);
-      setSelectedCodes(new Set()); // reset selection after refresh
     } catch (e: unknown) {
       setErrorMissing(e instanceof Error ? e.message : "Unknown error");
     } finally {
       setLoadingMissing(false);
+    }
+  }, []);
+
+  // Silent background poll — only refreshes generationStatus on existing rows.
+  // Does not show the loading skeleton, reset pagination, or clear selection.
+  const refreshGenerationStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/products/missing-lifestyle");
+      if (!res.ok) return;
+      const data: ApiResponse = await res.json();
+      setMissingProducts((prev) => {
+        const statusMap = new Map(
+          data.products.map((p) => [p.identifier, p.generationStatus])
+        );
+        return prev.map((p) => ({
+          ...p,
+          generationStatus: statusMap.get(p.identifier) ?? p.generationStatus,
+        }));
+      });
+    } catch {
+      // silent — transient errors are fine for background polls
     }
   }, []);
 
@@ -367,29 +404,18 @@ export default function ProductsPage() {
     fetchMissing();
   }, [fetchMissing]);
 
-  // Re-fetch when the tab/page regains visibility (e.g. returning from the generate detail page).
-  // This ensures the Pipeline badge reflects the latest generationStatus from DynamoDB.
-  useEffect(() => {
-    function handleVisibilityChange() {
-      if (document.visibilityState === "visible") {
-        fetchMissing();
-      }
-    }
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [fetchMissing]);
-
-  // While any product is GENERATING, poll every 15 s so the status badge auto-updates
-  // without the user having to manually refresh. Stops as soon as all are settled.
+  // While any product is GENERATING, silently poll every 15 s to refresh
+  // the Pipeline badge. Uses refreshGenerationStatus (not fetchMissing) so
+  // the table, pagination, and selection are never disrupted.
   useEffect(() => {
     const hasGenerating = missingProducts.some(
       (p) => p.generationStatus === "GENERATING"
     );
     if (!hasGenerating) return;
 
-    const interval = setInterval(fetchMissing, 15_000);
+    const interval = setInterval(refreshGenerationStatus, 15_000);
     return () => clearInterval(interval);
-  }, [missingProducts, fetchMissing]);
+  }, [missingProducts, refreshGenerationStatus]);
 
   // ── Sync from Akeneo ─────────────────────────────────────────────────────
 
@@ -436,6 +462,7 @@ export default function ProductsPage() {
         type: "success",
         message: `Sync complete — ${result.totalProducts} products saved to DynamoDB (job ${jobId}).`,
       });
+      setSelectedCodes(new Set()); // clear selection when the product list changes
       await fetchMissing();
     } catch (e: unknown) {
       setSyncBanner({
@@ -462,20 +489,20 @@ export default function ProductsPage() {
           (data as { detail?: string }).detail ?? `Generate failed (${res.status})`
         );
 
+      // All three slots start as "polling" — Step Functions handles the full
+      // LS1→LS2→LS3 pipeline internally. The detail page polls
+      // GET /generate/execution-status/{executionArn} for the overall result.
       const jobSet: JobSet = {
         jobSetId: data.jobSetId,
         salesCode: data.salesCode,
         createdAt: new Date().toISOString(),
         resolution: "2K",
+        executionArn: data.executionArn,
         jobs: {
-          ls1: { taskId: data.jobs.ls1.taskId, status: data.jobs.ls1.status },
-          ls2: { taskId: null, status: "idle" },
-          ls3: { taskId: data.jobs.ls3.taskId, status: data.jobs.ls3.status },
-          companions: data.jobs.companions.map((c) => ({
-            salesCode: c.salesCode,
-            taskId: c.taskId,
-            status: c.status,
-          })),
+          ls1: { taskId: null, status: "polling" },
+          ls2: { taskId: null, status: "polling" },
+          ls3: { taskId: null, status: "polling" },
+          companions: [],
         },
       };
       addJobSet(jobSet);
@@ -491,6 +518,8 @@ export default function ProductsPage() {
   }
 
   // ── Batch generate ───────────────────────────────────────────────────────
+  // Calls POST /generate/single once per product in parallel.
+  // Each call starts an independent Step Functions execution.
 
   async function handleBatchGenerate() {
     if (selectedCodes.size < 2) return;
@@ -500,49 +529,107 @@ export default function ProductsPage() {
       message: `Submitting ${codes.length} products for generation…`,
     });
 
-    try {
-      const res = await fetch("/api/generate/batch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ salesCodes: codes, resolution: "2K" }),
-      });
-      const data = await res.json();
-      if (!res.ok)
-        throw new Error(
-          (data as { detail?: string }).detail ?? `Batch generate failed (${res.status})`
-        );
+    const results = await Promise.allSettled(
+      codes.map(async (salesCode) => {
+        const res = await fetch("/api/generate/single", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ salesCode, resolution: "2K" }),
+        });
+        const data: SingleGenerateResponse = await res.json();
+        if (!res.ok)
+          throw new Error(
+            (data as { detail?: string }).detail ?? `Generate failed (${res.status})`
+          );
+        return data;
+      })
+    );
 
-      // Save each returned job set to localStorage so the Generate queue picks them up
-      const responses: SingleGenerateResponse[] = (data as { products: SingleGenerateResponse[] }).products;
-      responses.forEach((r) => {
+    let succeeded = 0;
+    let failed = 0;
+
+    results.forEach((result) => {
+      if (result.status === "fulfilled") {
+        const r = result.value;
         const jobSet: JobSet = {
           jobSetId: r.jobSetId,
           salesCode: r.salesCode,
           createdAt: new Date().toISOString(),
           resolution: "2K",
+          executionArn: r.executionArn,
           jobs: {
-            ls1: { taskId: r.jobs.ls1.taskId, status: r.jobs.ls1.status },
-            ls2: { taskId: null, status: "idle" },
-            ls3: { taskId: r.jobs.ls3.taskId, status: r.jobs.ls3.status },
-            companions: r.jobs.companions.map((c) => ({
-              salesCode: c.salesCode,
-              taskId: c.taskId,
-              status: c.status,
-            })),
+            ls1: { taskId: null, status: "polling" },
+            ls2: { taskId: null, status: "polling" },
+            ls3: { taskId: null, status: "polling" },
+            companions: [],
           },
         };
         addJobSet(jobSet);
-      });
+        succeeded++;
+      } else {
+        failed++;
+      }
+    });
 
+    if (failed === 0) {
       setBatchBanner({
         type: "success",
-        message: `${codes.length} products queued for generation. Check the Generate page to track progress.`,
+        message: `${succeeded} products queued. Check the Generate page to track progress.`,
       });
-      setSelectedCodes(new Set());
-    } catch (e: unknown) {
+    } else if (succeeded > 0) {
+      setBatchBanner({
+        type: "success",
+        message: `${succeeded} queued, ${failed} failed to submit. Check the Generate page.`,
+      });
+    } else {
       setBatchBanner({
         type: "error",
-        message: e instanceof Error ? e.message : "Batch generation failed",
+        message: `All ${failed} submissions failed. Please try again.`,
+      });
+    }
+
+    setSelectedCodes(new Set());
+  }
+
+  // ── Process all ungenerated (runs entirely in BE) ─────────────────────────
+  // Calls POST /generate/batch — the Lambda scans DynamoDB for all PENDING
+  // products and fires a Step Functions execution for each. Returns immediately.
+
+  async function handleProcessAll() {
+    const pendingCount = missingProducts.filter(
+      (p) => p.generationStatus === "PENDING"
+    ).length;
+    if (pendingCount === 0) return;
+
+    setProcessAllBanner({
+      type: "loading",
+      message: `Queuing ${pendingCount} ungenerated product${pendingCount !== 1 ? "s" : ""} for generation…`,
+    });
+
+    try {
+      const res = await fetch("/api/generate/batch", { method: "POST" });
+      const data: BatchGenerateAllResponse = await res.json();
+      if (!res.ok)
+        throw new Error(
+          (data as { detail?: string }).detail ?? `Process All failed (${res.status})`
+        );
+
+      const parts: string[] = [];
+      if (data.submitted > 0) parts.push(`${data.submitted} queued`);
+      if (data.skipped   > 0) parts.push(`${data.skipped} skipped (already running)`);
+      if (data.failed    > 0) parts.push(`${data.failed} failed to start`);
+
+      setProcessAllBanner({
+        type: data.failed > 0 && data.submitted === 0 ? "error" : "success",
+        message: `${parts.join(", ")}. Check the Generate page to monitor progress.`,
+      });
+
+      // Silently refresh statuses so PENDING badges flip to GENERATING
+      await refreshGenerationStatus();
+    } catch (e: unknown) {
+      setProcessAllBanner({
+        type: "error",
+        message: e instanceof Error ? e.message : "Process All failed",
       });
     }
   }
@@ -561,8 +648,12 @@ export default function ProductsPage() {
     });
   }
 
-  const filteredMissingProducts = filterProducts(missingProducts, filterQuery);
-  const filteredCandidateProducts = filterProducts(candidateProducts, filterQuery);
+  const filteredMissingProducts = filterProducts(missingProducts, filterQuery, statusFilter);
+  const filteredCandidateProducts = filterProducts(candidateProducts, filterQuery, "all");
+
+  const pendingCount    = missingProducts.filter((p) => p.generationStatus === "PENDING").length;
+  const generatingCount = missingProducts.filter((p) => p.generationStatus === "GENERATING").length;
+  const generatedCount  = missingProducts.filter((p) => p.generationStatus === "GENERATED").length;
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -587,6 +678,21 @@ export default function ProductsPage() {
                 : `Batch Generate (${selectedCodes.size})`}
             </Button>
           )}
+
+          {/* Process All — queues every PENDING product via BE */}
+          <Button
+            size="sm"
+            onClick={handleProcessAll}
+            disabled={pendingCount === 0 || processAllBanner.type === "loading"}
+            className="gap-1.5"
+          >
+            {processAllBanner.type === "loading" ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Play className="size-3.5" />
+            )}
+            {pendingCount > 0 ? `Process All (${pendingCount})` : "Process All"}
+          </Button>
 
           {/* Refresh from DB */}
           <Button
@@ -620,6 +726,9 @@ export default function ProductsPage() {
       )}
       {batchBanner.type !== "idle" && (
         <Banner state={batchBanner} onDismiss={() => setBatchBanner({ type: "idle" })} />
+      )}
+      {processAllBanner.type !== "idle" && (
+        <Banner state={processAllBanner} onDismiss={() => setProcessAllBanner({ type: "idle" })} />
       )}
 
       {/* Selected count hint */}
@@ -678,9 +787,41 @@ export default function ProductsPage() {
         <TabsContent value="missing" className="mt-4">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold">
-                Products with cutout images but no lifestyle imagery
-              </CardTitle>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <CardTitle className="text-sm font-semibold">
+                  Products with cutout images but no lifestyle imagery
+                </CardTitle>
+                {/* Status filter pills */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {(["all", "PENDING", "GENERATING", "GENERATED"] as StatusFilter[]).map((f) => {
+                    const count =
+                      f === "all"        ? missingProducts.length  :
+                      f === "PENDING"    ? pendingCount            :
+                      f === "GENERATING" ? generatingCount         :
+                                          generatedCount;
+                    return (
+                      <button
+                        key={f}
+                        onClick={() => setStatusFilter(f)}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                          statusFilter === f
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-background text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        {STATUS_FILTER_LABELS[f]}
+                        <span className={cn(
+                          "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                          statusFilter === f ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground"
+                        )}>
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
               {loadingMissing && <ProductSkeleton />}

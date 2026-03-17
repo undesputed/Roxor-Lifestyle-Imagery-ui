@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo, use } from "react";
+import { useState, useEffect, useCallback, useMemo, use } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,10 +10,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   getJobSet,
   updateSlotJob,
-  updateCompanionJob,
   addImage,
+  deleteJobSet,
+  addJobSet,
 } from "@/lib/store";
-import type { JobSet, SlotJob, JobStatusResponse } from "@/lib/types";
+import type { JobSet, SlotJob, ExecutionStatusResponse, SingleGenerateResponse } from "@/lib/types";
 import {
   ArrowLeft,
   CheckCircle,
@@ -20,37 +22,23 @@ import {
   Clock,
   Loader2,
   ExternalLink,
+  RotateCcw,
 } from "lucide-react";
 
 // ─── Poll interval ────────────────────────────────────────────────────────────
 
 const POLL_INTERVAL_MS = 10_000;
-const ACTIVE_STATES = new Set(["waiting", "processing", "pending", "queued"]);
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── API helper ───────────────────────────────────────────────────────────────
 
-async function fetchJobStatus(taskId: string): Promise<JobStatusResponse> {
-  const res = await fetch(`/api/generate/${taskId}/status`);
-  if (!res.ok) throw new Error(`Status check failed (${res.status})`);
+async function fetchExecutionStatus(
+  executionArn: string
+): Promise<ExecutionStatusResponse> {
+  // API Gateway expects the ARN URL-encoded in the path segment
+  const encoded = encodeURIComponent(executionArn);
+  const res = await fetch(`/api/generate/execution-status/${encoded}`);
+  if (!res.ok) throw new Error(`Execution status check failed (${res.status})`);
   return res.json();
-}
-
-async function triggerLs2(
-  salesCode: string,
-  ls1Url: string,
-  resolution: string
-): Promise<string> {
-  const res = await fetch("/api/generate/trigger-ls2", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ salesCode, ls1Url, resolution }),
-  });
-  const data = await res.json();
-  if (!res.ok)
-    throw new Error(
-      (data as { detail?: string }).detail ?? `LS2 trigger failed (${res.status})`
-    );
-  return data.taskId as string;
 }
 
 // ─── Slot status icon ─────────────────────────────────────────────────────────
@@ -99,11 +87,6 @@ function SlotCard({
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
-          {job.taskId && (
-            <p className="text-xs text-muted-foreground font-mono mt-1 truncate">
-              Task: {job.taskId}
-            </p>
-          )}
           {job.failMsg && (
             <p className="text-xs text-destructive mt-1">{job.failMsg}</p>
           )}
@@ -179,23 +162,24 @@ export default function GenerateDetailPage({
   params: Promise<{ jobSetId: string }>;
 }) {
   const { jobSetId } = use(params);
-  const [jobSet, setJobSet] = useState<JobSet | null>(null);
-  // Use a ref so the LS2 trigger guard doesn't cause extra re-renders
-  const ls2TriggeredRef = useRef(false);
+  const router = useRouter();
+  const [jobSet, setJobSet]       = useState<JobSet | null>(null);
+  const [isRerunning, setIsRerunning] = useState(false);
+  const [rerunError,  setRerunError]  = useState<string | null>(null);
 
-  // Re-read localStorage and update state (called from async contexts only)
+  // Re-read localStorage and refresh state (only called from async contexts)
   const reload = useCallback(() => {
     const fresh = getJobSet(jobSetId);
     setJobSet(fresh);
     return fresh;
   }, [jobSetId]);
 
-  // Initial load — read jobSetId directly, not via reload(), to avoid setState-in-effect
+  // Initial load
   useEffect(() => {
     setJobSet(getJobSet(jobSetId));
   }, [jobSetId]);
 
-  // Derive "all main slots done" from jobSet without a separate state
+  // Derive "all main slots done" without a separate state variable
   const allMainDone = useMemo(
     () =>
       jobSet != null &&
@@ -205,82 +189,86 @@ export default function GenerateDetailPage({
     [jobSet]
   );
 
-  // ── Poll all active task IDs ──────────────────────────────────────────────
+  // ── Poll Step Functions execution status ──────────────────────────────────
+  //
+  // Rather than polling kie.ai task IDs individually (the old FastAPI model),
+  // we poll GET /generate/execution-status/{executionArn} which queries
+  // DescribeExecution on Step Functions.
+  //
+  // Step Functions runs the full pipeline internally:
+  //   LS1 + LS3 in parallel → LS2 after LS1 succeeds → DynamoDB mark GENERATED
+  //
+  // The response is one of:
+  //   RUNNING   — still processing; keep polling
+  //   SUCCEEDED — all 3 result URLs present; update slots and stop
+  //   FAILED    — mark all slots failed with the error cause; stop
 
   useEffect(() => {
-    if (!jobSet) return;
+    if (!jobSet || !jobSet.executionArn) return;
+
+    // If all slots already settled (e.g. page loaded from a completed run),
+    // there is nothing to poll.
+    const j = jobSet.jobs;
+    const alreadyDone =
+      (j.ls1.status === "success" &&
+        j.ls2.status === "success" &&
+        j.ls3.status === "success") ||
+      j.ls1.status === "failed" ||
+      j.ls2.status === "failed" ||
+      j.ls3.status === "failed";
+
+    if (alreadyDone) return;
 
     const interval = setInterval(async () => {
+      // Always read fresh state from localStorage to avoid stale closures
       const current = getJobSet(jobSetId);
-      if (!current) return;
-
-      // Collect all slots + companions that need polling
-      type PollTarget =
-        | { kind: "slot"; slot: "ls1" | "ls2" | "ls3"; job: SlotJob }
-        | { kind: "companion"; salesCode: string; job: SlotJob };
-
-      const targets: PollTarget[] = [];
-
-      (["ls1", "ls2", "ls3"] as const).forEach((slot) => {
-        const job = current.jobs[slot];
-        if (job.taskId && (job.status === "submitted" || job.status === "polling")) {
-          targets.push({ kind: "slot", slot, job });
-        }
-      });
-
-      current.jobs.companions.forEach((c) => {
-        if (c.taskId && (c.status === "submitted" || c.status === "polling")) {
-          targets.push({ kind: "companion", salesCode: c.salesCode, job: c });
-        }
-      });
-
-      if (targets.length === 0) {
+      if (!current || !current.executionArn) {
         clearInterval(interval);
         return;
       }
 
-      // Poll each in parallel
-      await Promise.allSettled(
-        targets.map(async (target) => {
-          try {
-            const statusRes = await fetchJobStatus(target.job.taskId!);
-            const state = statusRes.state;
+      // Stop if settled since the last tick
+      const jobs = current.jobs;
+      const settled =
+        (jobs.ls1.status === "success" &&
+          jobs.ls2.status === "success" &&
+          jobs.ls3.status === "success") ||
+        jobs.ls1.status === "failed" ||
+        jobs.ls2.status === "failed" ||
+        jobs.ls3.status === "failed";
 
-            if (state === "success" && statusRes.resultUrl) {
-              if (target.kind === "slot") {
-                updateSlotJob(jobSetId, target.slot, {
-                  status: "success",
-                  resultUrl: statusRes.resultUrl,
-                });
-              } else {
-                updateCompanionJob(jobSetId, target.salesCode, {
-                  status: "success",
-                  resultUrl: statusRes.resultUrl,
-                });
-              }
-            } else if (state === "fail") {
-              if (target.kind === "slot") {
-                updateSlotJob(jobSetId, target.slot, {
-                  status: "failed",
-                  failMsg: statusRes.failMsg ?? "Generation failed",
-                });
-              } else {
-                updateCompanionJob(jobSetId, target.salesCode, {
-                  status: "failed",
-                  failMsg: statusRes.failMsg ?? "Generation failed",
-                });
-              }
-            } else if (ACTIVE_STATES.has(state)) {
-              // Still running — mark as polling if not already
-              if (target.kind === "slot" && target.job.status === "submitted") {
-                updateSlotJob(jobSetId, target.slot, { status: "polling" });
-              }
-            }
-          } catch {
-            // Transient network error — keep polling
-          }
-        })
-      );
+      if (settled) {
+        clearInterval(interval);
+        return;
+      }
+
+      try {
+        const res = await fetchExecutionStatus(current.executionArn);
+
+        if (res.executionStatus === "SUCCEEDED") {
+          // All 3 slots completed — write result URLs and stop
+          (["ls1", "ls2", "ls3"] as const).forEach((slot) => {
+            updateSlotJob(jobSetId, slot, {
+              status: "success",
+              resultUrl: res.slots[slot].resultUrl ?? "",
+            });
+          });
+          clearInterval(interval);
+        } else if (res.executionStatus === "FAILED") {
+          // Pipeline failed — mark all slots so the UI shows the error
+          const failMsg = res.cause ?? res.error ?? "Pipeline failed";
+          (["ls1", "ls2", "ls3"] as const).forEach((slot) => {
+            updateSlotJob(jobSetId, slot, {
+              status: "failed",
+              failMsg,
+            });
+          });
+          clearInterval(interval);
+        }
+        // executionStatus === "RUNNING" — keep polling, no state updates needed
+      } catch {
+        // Transient network error — keep polling
+      }
 
       reload();
     }, POLL_INTERVAL_MS);
@@ -288,50 +276,46 @@ export default function GenerateDetailPage({
     return () => clearInterval(interval);
   }, [jobSet, jobSetId, reload]);
 
-  // ── Auto-trigger LS2 when LS1 succeeds ───────────────────────────────────
+  // ── Re-run ────────────────────────────────────────────────────────────────
+  // Starts a fresh Step Functions execution for the same product.
+  // Removes the current JobSet from localStorage and navigates to the new one.
 
-  useEffect(() => {
-    if (!jobSet || ls2TriggeredRef.current) return;
-    const ls1 = jobSet.jobs.ls1;
-    const ls2 = jobSet.jobs.ls2;
+  async function handleRerun() {
+    if (!jobSet) return;
+    setIsRerunning(true);
+    setRerunError(null);
 
-    if (ls1.status === "success" && ls1.resultUrl && ls2.status === "idle") {
-      // Mark as triggered before the async call to prevent double-submission
-      ls2TriggeredRef.current = true;
+    try {
+      const res = await fetch("/api/generate/single", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ salesCode: jobSet.salesCode, resolution: jobSet.resolution }),
+      });
+      const data: SingleGenerateResponse = await res.json();
+      if (!res.ok)
+        throw new Error((data as { detail?: string }).detail ?? `Re-run failed (${res.status})`);
 
-      triggerLs2(jobSet.salesCode, ls1.resultUrl, jobSet.resolution)
-        .then((taskId) => {
-          updateSlotJob(jobSetId, "ls2", { taskId, status: "submitted" });
-          reload();
-        })
-        .catch((err) => {
-          updateSlotJob(jobSetId, "ls2", {
-            status: "failed",
-            failMsg: err instanceof Error ? err.message : "LS2 trigger failed",
-          });
-          reload();
-        });
+      // Replace old entry and navigate to the new job
+      deleteJobSet(jobSet.jobSetId);
+      addJobSet({
+        jobSetId:     data.jobSetId,
+        salesCode:    data.salesCode,
+        createdAt:    new Date().toISOString(),
+        resolution:   jobSet.resolution,
+        executionArn: data.executionArn,
+        jobs: {
+          ls1:        { taskId: null, status: "polling" },
+          ls2:        { taskId: null, status: "polling" },
+          ls3:        { taskId: null, status: "polling" },
+          companions: [],
+        },
+      });
+      router.push(`/generate/${data.jobSetId}`);
+    } catch (e: unknown) {
+      setRerunError(e instanceof Error ? e.message : "Re-run failed");
+      setIsRerunning(false);
     }
-  }, [jobSet, jobSetId, reload]);
-
-  // ── Mark product as GENERATED in DynamoDB when all slots succeed ─────────
-  // Use a ref so the call fires exactly once even if allMainDone stays true
-  // across multiple re-renders (e.g. after localStorage reloads).
-  const completedMarkedRef = useRef(false);
-
-  useEffect(() => {
-    if (!allMainDone || !jobSet || completedMarkedRef.current) return;
-    completedMarkedRef.current = true;
-
-    fetch("/api/generate/complete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ salesCode: jobSet.salesCode }),
-    }).catch((err) => {
-      // Best-effort — log but never surface to the user
-      console.warn("mark complete failed:", err);
-    });
-  }, [allMainDone, jobSet]);
+  }
 
   // ── Send all 3 slots to the Review queue ─────────────────────────────────
 
@@ -369,20 +353,59 @@ export default function GenerateDetailPage({
   return (
     <div className="max-w-3xl mx-auto space-y-6">
       {/* Back link + header */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-start gap-3">
         <Link
           href="/generate"
-          className="text-muted-foreground hover:text-foreground transition-colors"
+          className="text-muted-foreground hover:text-foreground transition-colors mt-1"
         >
           <ArrowLeft className="size-4" />
         </Link>
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight font-mono">
-            {jobSet.salesCode}
-          </h2>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h2 className="text-xl font-semibold tracking-tight font-mono">
+              {jobSet.salesCode}
+            </h2>
+            {/* Re-run button — shown for failed or in-progress jobs */}
+            {(jobSet.jobs.ls1.status === "failed" ||
+              jobSet.jobs.ls2.status === "failed" ||
+              jobSet.jobs.ls3.status === "failed" ||
+              jobSet.jobs.ls1.status === "polling" ||
+              jobSet.jobs.ls2.status === "polling" ||
+              jobSet.jobs.ls3.status === "polling") && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRerun}
+                disabled={isRerunning}
+                className="gap-1.5 h-7 text-xs"
+              >
+                {isRerunning ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  <RotateCcw className="size-3" />
+                )}
+                {isRerunning ? "Starting…" : "Re-run"}
+              </Button>
+            )}
+          </div>
           <p className="text-xs text-muted-foreground mt-0.5">
             Started {new Date(jobSet.createdAt).toLocaleString()} · {jobSet.resolution}
           </p>
+          {/* Show execution ARN for debugging / traceability */}
+          {jobSet.executionArn && (
+            <p className="text-[10px] text-muted-foreground/60 font-mono mt-0.5 truncate">
+              {jobSet.executionArn}
+            </p>
+          )}
+          {/* Re-run error */}
+          {rerunError && (
+            <p className="text-xs text-destructive mt-1">
+              Re-run failed: {rerunError} —{" "}
+              <button onClick={() => setRerunError(null)} className="underline">
+                dismiss
+              </button>
+            </p>
+          )}
         </div>
       </div>
 
@@ -399,7 +422,7 @@ export default function GenerateDetailPage({
           />
           <SlotCard
             title="LS2"
-            subtitle="Close-up hero shot — portrait 3:4 (auto-triggered after LS1)"
+            subtitle="Close-up hero shot — portrait 3:4 (submitted after LS1 by the pipeline)"
             job={jobSet.jobs.ls2}
           />
           <SlotCard
@@ -423,7 +446,7 @@ export default function GenerateDetailPage({
         </div>
       )}
 
-      {/* Companion cutouts */}
+      {/* Companion cutouts (legacy FastAPI jobs only — not used in AWS pipeline) */}
       {jobSet.jobs.companions.length > 0 && (
         <Card>
           <CardHeader className="pb-3">

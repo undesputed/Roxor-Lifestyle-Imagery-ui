@@ -8,6 +8,21 @@
 
 import type { JobSet, SlotJob, SlotStatus } from "./types";
 
+// ─── Subscription (for useSyncExternalStore) ───────────────────────────────────
+
+type StoreListener = () => void;
+const storeListeners = new Set<StoreListener>();
+
+function emitStoreChange(): void {
+  for (const l of storeListeners) l();
+}
+
+/** Subscribe to store changes. Required by useSyncExternalStore. */
+export function subscribeStore(listener: StoreListener): () => void {
+  storeListeners.add(listener);
+  return () => storeListeners.delete(listener);
+}
+
 // ─── Legacy: GeneratedImage (Review page — DO NOT CHANGE) ─────────────────────
 
 export type Slot = "ls1" | "ls2" | "ls3";
@@ -35,6 +50,7 @@ export function loadImages(): GeneratedImage[] {
 
 export function saveImages(images: GeneratedImage[]): void {
   localStorage.setItem(IMAGES_KEY, JSON.stringify(images));
+  emitStoreChange();
 }
 
 export function addImage(
@@ -84,22 +100,38 @@ export function findApprovedLs1Url(salesCode: string): string | null {
 
 const JOBSETS_KEY = "roxor_job_sets";
 
+/**
+ * In-memory cache for JobSets.
+ *
+ * null  → not yet hydrated from localStorage
+ * array → stable reference; only replaced when saveJobSets() is called
+ *
+ * useSyncExternalStore requires the snapshot function to return the SAME
+ * reference between renders unless data has actually changed. JSON.parse
+ * always produces a new object, so without this cache every render looks
+ * like a "change" and React loops infinitely.
+ */
+let jobSetsCache: JobSet[] | null = null;
+
 export function loadJobSets(): JobSet[] {
   if (typeof window === "undefined") return [];
+  if (jobSetsCache !== null) return jobSetsCache;
   try {
-    return JSON.parse(localStorage.getItem(JOBSETS_KEY) ?? "[]");
+    jobSetsCache = JSON.parse(localStorage.getItem(JOBSETS_KEY) ?? "[]");
   } catch {
-    return [];
+    jobSetsCache = [];
   }
+  return jobSetsCache!;
 }
 
 export function saveJobSets(sets: JobSet[]): void {
+  jobSetsCache = sets;                                     // stable ref first
   localStorage.setItem(JOBSETS_KEY, JSON.stringify(sets));
+  emitStoreChange();                                       // then notify
 }
 
 export function addJobSet(set: JobSet): void {
   const existing = loadJobSets();
-  // Prepend so the queue shows newest first
   saveJobSets([set, ...existing]);
 }
 
