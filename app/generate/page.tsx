@@ -314,36 +314,53 @@ export default function GeneratePage() {
         const res = await fetch("/api/generate/jobs");
         if (!res.ok) return;
         const data: { jobs: Array<{
-          jobSetId:         string;
+          jobSetId:         string;        // may be "db-{salesCode}" for older records
           salesCode:        string;
-          executionArn:     string;
+          executionArn:     string | null;
           createdAt:        string;
           resolution:       string;
-          generationStatus: string;
+          generationStatus: string;        // "GENERATING" | "GENERATED"
+          ls1ResultUrl?:    string | null;
+          ls2ResultUrl?:    string | null;
+          ls3ResultUrl?:    string | null;
         }> } = await res.json();
 
-        const existing    = loadJobSets();
-        const existingIds = new Set(existing.map((s) => s.jobSetId));
+        const existing         = loadJobSets();
+        const existingIds      = new Set(existing.map((s) => s.jobSetId));
+        // Also deduplicate by salesCode so we never show the same product twice
+        const existingCodes    = new Set(existing.map((s) => s.salesCode));
 
         const newJobSets: JobSet[] = data.jobs
-          .filter((j) => j.jobSetId && !existingIds.has(j.jobSetId))
-          .map((j) => ({
-            jobSetId:     j.jobSetId,
-            salesCode:    j.salesCode,
-            createdAt:    j.createdAt,
-            resolution:   (j.resolution as Resolution) ?? "2K",
-            executionArn: j.executionArn,
-            jobs: {
-              ls1:        { taskId: null, status: "polling" as const },
-              ls2:        { taskId: null, status: "polling" as const },
-              ls3:        { taskId: null, status: "polling" as const },
-              companions: [],
-            },
-          }));
+          .filter((j) =>
+            !existingIds.has(j.jobSetId) && !existingCodes.has(j.salesCode)
+          )
+          .map((j) => {
+            const isGenerated = j.generationStatus === "GENERATED";
+            return {
+              jobSetId:     j.jobSetId,
+              salesCode:    j.salesCode,
+              createdAt:    j.createdAt || new Date().toISOString(),
+              resolution:   (j.resolution as Resolution) ?? "2K",
+              executionArn: j.executionArn ?? undefined,
+              jobs: {
+                // For GENERATED jobs set success + resultUrl so the queue row
+                // shows green dots immediately without needing a status poll.
+                ls1: isGenerated && j.ls1ResultUrl
+                  ? { taskId: null, status: "success" as const, resultUrl: j.ls1ResultUrl }
+                  : { taskId: null, status: "polling" as const },
+                ls2: isGenerated && j.ls2ResultUrl
+                  ? { taskId: null, status: "success" as const, resultUrl: j.ls2ResultUrl }
+                  : { taskId: null, status: "polling" as const },
+                ls3: isGenerated && j.ls3ResultUrl
+                  ? { taskId: null, status: "success" as const, resultUrl: j.ls3ResultUrl }
+                  : { taskId: null, status: "polling" as const },
+                companions: [],
+              },
+            };
+          });
 
         if (newJobSets.length > 0) {
-          // Prepend backend jobs (sorted newest-first from Lambda) before
-          // existing localStorage jobs; saveJobSets triggers subscribeStore.
+          // Prepend backend jobs (newest-first from Lambda) before localStorage jobs
           saveJobSets([...newJobSets, ...existing]);
         }
       } catch {
