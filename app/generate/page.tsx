@@ -5,8 +5,8 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { loadJobSets, deriveJobSetStatus, deleteJobSet, addJobSet, subscribeStore, updateSlotJob } from "@/lib/store";
-import type { JobSet, SingleGenerateResponse, ExecutionStatusResponse } from "@/lib/types";
+import { loadJobSets, saveJobSets, deriveJobSetStatus, deleteJobSet, addJobSet, subscribeStore, updateSlotJob } from "@/lib/store";
+import type { JobSet, SingleGenerateResponse, ExecutionStatusResponse, Resolution } from "@/lib/types";
 import { Trash2, ChevronRight, Zap, Clock, Search, X, RotateCcw, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -303,6 +303,56 @@ export default function GeneratePage() {
     setJobSets(loadJobSets());
     return subscribeStore(() => setJobSets(loadJobSets()));
   }, []);
+
+  // ── Sync jobs from backend (multi-user support) ────────────────────────────
+  // On mount, fetch all generation jobs stored in DynamoDB so jobs started by
+  // other users/browsers appear in this queue. Jobs already in localStorage
+  // are kept as-is (localStorage has the most up-to-date slot statuses).
+  useEffect(() => {
+    async function syncFromBackend() {
+      try {
+        const res = await fetch("/api/generate/jobs");
+        if (!res.ok) return;
+        const data: { jobs: Array<{
+          jobSetId:         string;
+          salesCode:        string;
+          executionArn:     string;
+          createdAt:        string;
+          resolution:       string;
+          generationStatus: string;
+        }> } = await res.json();
+
+        const existing    = loadJobSets();
+        const existingIds = new Set(existing.map((s) => s.jobSetId));
+
+        const newJobSets: JobSet[] = data.jobs
+          .filter((j) => j.jobSetId && !existingIds.has(j.jobSetId))
+          .map((j) => ({
+            jobSetId:     j.jobSetId,
+            salesCode:    j.salesCode,
+            createdAt:    j.createdAt,
+            resolution:   (j.resolution as Resolution) ?? "2K",
+            executionArn: j.executionArn,
+            jobs: {
+              ls1:        { taskId: null, status: "polling" as const },
+              ls2:        { taskId: null, status: "polling" as const },
+              ls3:        { taskId: null, status: "polling" as const },
+              companions: [],
+            },
+          }));
+
+        if (newJobSets.length > 0) {
+          // Prepend backend jobs (sorted newest-first from Lambda) before
+          // existing localStorage jobs; saveJobSets triggers subscribeStore.
+          saveJobSets([...newJobSets, ...existing]);
+        }
+      } catch {
+        // Network unavailable or API not yet deployed — localStorage is the fallback
+      }
+    }
+
+    syncFromBackend();
+  }, []); // only on mount
 
   // ── Background status refresh ──────────────────────────────────────────────
   // On mount (page refresh) and every 30s, check the execution status of all

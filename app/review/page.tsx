@@ -424,6 +424,57 @@ export default function ReviewPage() {
 
   const refresh = useCallback(() => setImages(loadImages()), []);
 
+  // ── Sync completed jobs from backend (multi-user support) ─────────────────
+  // On mount, fetch all GENERATED products from DynamoDB. For any result URL
+  // not already in localStorage, add it to the review queue so images generated
+  // by other users/browsers appear here automatically.
+  useEffect(() => {
+    async function syncGeneratedFromBackend() {
+      try {
+        const res = await fetch("/api/generate/jobs");
+        if (!res.ok) return;
+        const data: {
+          jobs: Array<{
+            salesCode:        string;
+            generationStatus: string;
+            ls1ResultUrl?:    string | null;
+            ls2ResultUrl?:    string | null;
+            ls3ResultUrl?:    string | null;
+          }>;
+        } = await res.json();
+
+        const generated = data.jobs.filter((j) => j.generationStatus === "GENERATED");
+        if (generated.length === 0) return;
+
+        // Build a set of existing URLs to avoid duplicates
+        const existing    = loadImages();
+        const existingUrls = new Set(existing.map((img) => img.url));
+
+        let added = false;
+        for (const job of generated) {
+          const slots: Array<{ slot: Slot; url: string | null | undefined }> = [
+            { slot: "ls1", url: job.ls1ResultUrl },
+            { slot: "ls2", url: job.ls2ResultUrl },
+            { slot: "ls3", url: job.ls3ResultUrl },
+          ];
+          for (const { slot, url } of slots) {
+            if (url && !existingUrls.has(url)) {
+              addImage({ salesCode: job.salesCode, slot, url });
+              existingUrls.add(url); // prevent re-adding within this loop
+              added = true;
+            }
+          }
+        }
+
+        if (added) refresh();
+      } catch {
+        // Network unavailable — localStorage is the fallback
+      }
+    }
+
+    syncGeneratedFromBackend();
+  }, [refresh]); // only on mount
+
   function openPreview(img: GeneratedImage) {
     setPreviewId(img.id);
     setPreviewOpen(true);
