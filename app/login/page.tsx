@@ -1,12 +1,23 @@
 "use client";
 
-import { signIn } from "next-auth/react";
-import { useState } from "react";
+import { signIn, useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { Loader2 } from "lucide-react";
 
 export default function LoginPage() {
+  const { status } = useSession();
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
+
+  // If the user is already authenticated, send them to the main app instead of
+  // leaving them on the login screen (especially important on Vercel).
+  useEffect(() => {
+    if (status === "authenticated") {
+      router.replace("/");
+    }
+  }, [status, router]);
 
   async function handleSignIn() {
     setLoading(true);
@@ -60,7 +71,7 @@ export default function LoginPage() {
 
             <button
               onClick={handleSignIn}
-              disabled={loading}
+              disabled={loading || status === "loading" || status === "authenticated"}
               className="w-full flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2.5 text-sm font-medium transition-colors"
             >
               {loading ? (
