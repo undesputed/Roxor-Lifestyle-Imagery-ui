@@ -11,6 +11,19 @@ export default function LoginPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
 
+  // Log initial mount, URL, and callbackUrl param
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const callbackUrl = url.searchParams.get("callbackUrl");
+    console.log("[login] mounted", {
+      href: url.href,
+      pathname: url.pathname,
+      search: url.search,
+      callbackUrl,
+    });
+  }, []);
+
   // Basic client-side logging to help debug production behaviour.
   useEffect(() => {
     // This will show up in the browser console (including on Vercel).
