@@ -11,17 +11,39 @@ export default function LoginPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
 
+  // Basic client-side logging to help debug production behaviour.
+  useEffect(() => {
+    // This will show up in the browser console (including on Vercel).
+    console.log("[login] session status changed:", status);
+  }, [status]);
+
   // If the user is already authenticated, send them to the main app instead of
   // leaving them on the login screen (especially important on Vercel).
   useEffect(() => {
     if (status === "authenticated") {
+      console.log("[login] already authenticated, redirecting to /");
       router.replace("/");
     }
   }, [status, router]);
 
   async function handleSignIn() {
+    console.log("[login] sign-in button clicked", {
+      status,
+      location: window.location.href,
+    });
     setLoading(true);
-    await signIn("cognito", { callbackUrl: "/" });
+    try {
+      const result = await signIn("cognito", { callbackUrl: "/" });
+      // In normal redirect flows, execution usually won't reach here,
+      // but if redirect: false is ever used this will log the outcome.
+      console.log("[login] signIn resolved:", result);
+    } catch (error) {
+      console.error("[login] signIn error:", error);
+    } finally {
+      // If redirect happens this won't run, but if it doesn't we'll
+      // avoid leaving the button stuck in a loading state.
+      setLoading(false);
+    }
   }
 
   return (

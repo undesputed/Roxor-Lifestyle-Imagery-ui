@@ -8,7 +8,8 @@ export const config = {
   //   /api/auth/*         — NextAuth callback / CSRF endpoints
   //   /_next/*            — Next.js internals (static files, HMR, etc.)
   //   /favicon.ico        — browser favicon request
+  //   /icon.svg           — app icon used in browser tabs
   matcher: [
-    "/((?!login|api/auth|_next/static|_next/image|favicon\\.ico).*)",
+    "/((?!login|api/auth|_next/static|_next/image|favicon\\.ico|icon\\.svg).*)",
   ],
 };
