@@ -71,7 +71,7 @@ export default function LoginPage() {
 
             <button
               onClick={handleSignIn}
-              disabled={loading || status === "loading" || status === "authenticated"}
+              disabled={loading}
               className="w-full flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-60 disabled:cursor-not-allowed px-4 py-2.5 text-sm font-medium transition-colors"
             >
               {loading ? (
