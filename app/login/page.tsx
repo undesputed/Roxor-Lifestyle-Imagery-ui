@@ -17,15 +17,6 @@ export default function LoginPage() {
     console.log("[login] session status changed:", status);
   }, [status]);
 
-  // If the user is already authenticated, send them to the main app instead of
-  // leaving them on the login screen (especially important on Vercel).
-  useEffect(() => {
-    if (status === "authenticated") {
-      console.log("[login] already authenticated, redirecting to /");
-      router.replace("/");
-    }
-  }, [status, router]);
-
   async function handleSignIn() {
     console.log("[login] sign-in button clicked", {
       status,
