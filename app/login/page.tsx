@@ -30,6 +30,35 @@ export default function LoginPage() {
     console.log("[login] session status changed:", status);
   }, [status]);
 
+  // If we hit /login while already authenticated, send the user to the
+  // intended callbackUrl (if present and same-origin) or fall back to "/".
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    if (typeof window === "undefined") return;
+
+    const current = new URL(window.location.href);
+    const rawCallback = current.searchParams.get("callbackUrl");
+
+    let destination = "/";
+    if (rawCallback) {
+      try {
+        const cb = new URL(rawCallback, window.location.origin);
+        if (cb.origin === window.location.origin) {
+          destination = cb.pathname + cb.search + cb.hash;
+        } else {
+          console.warn("[login] Ignoring cross-origin callbackUrl:", rawCallback);
+        }
+      } catch (err) {
+        console.warn("[login] Invalid callbackUrl, falling back to /:", rawCallback, err);
+      }
+    }
+
+    console.log("[login] authenticated on /login, redirecting to:", destination, {
+      rawCallback,
+    });
+    router.replace(destination);
+  }, [status, router]);
+
   async function handleSignIn() {
     console.log("[login] sign-in button clicked", {
       status,
