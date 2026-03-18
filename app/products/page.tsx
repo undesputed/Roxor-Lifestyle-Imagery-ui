@@ -9,8 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { addJobSet } from "@/lib/store";
-import type { JobSet, SingleGenerateResponse, SyncAkeneoResponse, SyncStatusResponse, BatchGenerateAllResponse } from "@/lib/types";
+import type { SingleGenerateResponse, SyncAkeneoResponse, SyncStatusResponse, BatchGenerateAllResponse } from "@/lib/types";
 import { RefreshCw, Zap, CheckSquare, Square, Loader2, Play } from "lucide-react";
 
 type GenerationStatus = "PENDING" | "GENERATING" | "GENERATED";
@@ -489,23 +488,6 @@ export default function ProductsPage() {
           (data as { detail?: string }).detail ?? `Generate failed (${res.status})`
         );
 
-      // All three slots start as "polling" — Step Functions handles the full
-      // LS1→LS2→LS3 pipeline internally. The detail page polls
-      // GET /generate/execution-status/{executionArn} for the overall result.
-      const jobSet: JobSet = {
-        jobSetId: data.jobSetId,
-        salesCode: data.salesCode,
-        createdAt: new Date().toISOString(),
-        resolution: "2K",
-        executionArn: data.executionArn,
-        jobs: {
-          ls1: { taskId: null, status: "polling" },
-          ls2: { taskId: null, status: "polling" },
-          ls3: { taskId: null, status: "polling" },
-          companions: [],
-        },
-      };
-      addJobSet(jobSet);
       router.push(`/generate/${data.jobSetId}`);
     } catch (e: unknown) {
       setBatchBanner({
@@ -550,21 +532,6 @@ export default function ProductsPage() {
 
     results.forEach((result) => {
       if (result.status === "fulfilled") {
-        const r = result.value;
-        const jobSet: JobSet = {
-          jobSetId: r.jobSetId,
-          salesCode: r.salesCode,
-          createdAt: new Date().toISOString(),
-          resolution: "2K",
-          executionArn: r.executionArn,
-          jobs: {
-            ls1: { taskId: null, status: "polling" },
-            ls2: { taskId: null, status: "polling" },
-            ls3: { taskId: null, status: "polling" },
-            companions: [],
-          },
-        };
-        addJobSet(jobSet);
         succeeded++;
       } else {
         failed++;
@@ -615,12 +582,12 @@ export default function ProductsPage() {
         );
 
       const parts: string[] = [];
-      if (data.submitted > 0) parts.push(`${data.submitted} queued`);
-      if (data.skipped   > 0) parts.push(`${data.skipped} skipped (already running)`);
-      if (data.failed    > 0) parts.push(`${data.failed} failed to start`);
+      if (data.queued  > 0) parts.push(`${data.queued} queued`);
+      if (data.skipped > 0) parts.push(`${data.skipped} skipped`);
+      if (data.failed  > 0) parts.push(`${data.failed} failed to enqueue`);
 
       setProcessAllBanner({
-        type: data.failed > 0 && data.submitted === 0 ? "error" : "success",
+        type: data.failed > 0 && data.queued === 0 ? "error" : "success",
         message: `${parts.join(", ")}. Check the Generate page to monitor progress.`,
       });
 

@@ -1,14 +1,17 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useTheme } from "next-themes";
+import { useSession, signOut } from "next-auth/react";
 import { startTransition, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   ImageIcon,
   LayoutDashboard,
   ListChecks,
+  LogOut,
   Moon,
   Search,
   Sun,
@@ -27,8 +30,6 @@ function ThemeToggle() {
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
-  // Avoid hydration mismatch — wrap in startTransition to satisfy the
-  // react-hooks/set-state-in-effect rule (setState is not synchronous here)
   useEffect(() => { startTransition(() => setMounted(true)); }, []);
   if (!mounted) return <div className="h-8 w-8" />;
 
@@ -45,6 +46,47 @@ function ThemeToggle() {
   );
 }
 
+function UserFooter() {
+  const { data: session } = useSession();
+  const email = session?.user?.email ?? "";
+  const name  = session?.user?.name  ?? email;
+  const initials = (name?.[0] ?? email?.[0] ?? "?").toUpperCase();
+
+  return (
+    <div className="px-4 py-4 border-t space-y-3">
+      {/* User info */}
+      {email && (
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-7 h-7 rounded-full bg-primary/15 border border-primary/20 flex items-center justify-center shrink-0 text-xs font-semibold text-primary">
+            {initials}
+          </div>
+          <div className="min-w-0 flex-1">
+            {name && name !== email && (
+              <p className="text-xs font-medium truncate leading-none">{name}</p>
+            )}
+            <p className="text-[11px] text-muted-foreground truncate leading-none mt-0.5">
+              {email}
+            </p>
+          </div>
+          <button
+            onClick={() => signOut({ callbackUrl: "/login" })}
+            className="shrink-0 flex items-center justify-center w-6 h-6 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+            title="Sign out"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Bottom row: model tag + theme toggle */}
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] text-muted-foreground">kie.ai · Nano Banana Pro</p>
+        <ThemeToggle />
+      </div>
+    </div>
+  );
+}
+
 export function Sidebar() {
   const pathname = usePathname();
 
@@ -52,13 +94,16 @@ export function Sidebar() {
     <aside className="w-56 border-r bg-card flex flex-col shrink-0">
       {/* Logo */}
       <div className="px-5 py-5 border-b">
-        <div className="flex items-center gap-2.5">
-          <div className="w-6 h-6 rounded bg-primary flex items-center justify-center shrink-0">
-            <ImageIcon className="w-3.5 h-3.5 text-primary-foreground" />
-          </div>
-          <div>
-            <p className="text-xs font-semibold leading-none">Roxor Group</p>
-            <p className="text-[11px] text-muted-foreground mt-0.5 leading-none">Lifestyle Imagery</p>
+        <div className="space-y-2">
+          <div className="relative h-6 w-[140px]">
+            <Image
+              src="https://files.roxorgroup.com/branding%20folder/logos/Roxor_Logo__Wordmark__RGB__Black.png?vh=15b197"
+              alt="Roxor"
+              fill
+              className="object-contain dark:invert"
+              sizes="140px"
+              priority
+            />
           </div>
         </div>
       </div>
@@ -85,11 +130,8 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Footer */}
-      <div className="px-4 py-4 border-t flex items-center justify-between">
-        <p className="text-[11px] text-muted-foreground">kie.ai · Nano Banana Pro</p>
-        <ThemeToggle />
-      </div>
+      {/* Footer with user + theme toggle */}
+      <UserFooter />
     </aside>
   );
 }

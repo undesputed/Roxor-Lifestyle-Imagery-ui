@@ -97,9 +97,9 @@ export type ExecutionStatusResponse = {
  * execution for each. Returns immediately; no FE polling required.
  */
 export type BatchGenerateAllResponse = {
-  submitted: number;  // executions successfully started
-  skipped:   number;  // already GENERATING or GENERATED — skipped
-  failed:    number;  // failed to start (partial failure)
+  queued:  number;  // messages enqueued to SQS
+  skipped: number;  // skipped (missing salesCode etc.)
+  failed:  number;  // failed to enqueue
 };
 
 /** Response from POST /sync/akeneo (202 — job started in background) */

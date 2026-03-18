@@ -14,7 +14,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { DownloadIcon, EyeIcon } from "lucide-react";
+import { DownloadIcon, EyeIcon, RefreshCw } from "lucide-react";
 import {
   loadImages,
   addImage,
@@ -412,68 +412,73 @@ function ImageRow({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ReviewPage() {
-  // Lazy init reads localStorage once on mount (client-side only)
-  const [images, setImages] = useState<GeneratedImage[]>(() => {
-    if (typeof window === "undefined") return [];
-    return loadImages();
-  });
+  // Always start from a consistent SSR-safe state, then load localStorage after mount.
+  const [images, setImages] = useState<GeneratedImage[]>([]);
   // Track the ID of the selected image; derive the object from images so it stays in sync
   const [previewId, setPreviewId] = useState<string | null>(null);
   const preview = images.find((i) => i.id === previewId) ?? null;
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const refresh = useCallback(() => setImages(loadImages()), []);
 
-  // ── Sync completed jobs from backend (multi-user support) ─────────────────
-  // On mount, fetch all GENERATED products from DynamoDB. For any result URL
-  // not already in localStorage, add it to the review queue so images generated
-  // by other users/browsers appear here automatically.
   useEffect(() => {
-    async function syncGeneratedFromBackend() {
-      try {
-        const res = await fetch("/api/generate/jobs");
-        if (!res.ok) return;
-        const data: {
-          jobs: Array<{
-            salesCode:        string;
-            generationStatus: string;
-            ls1ResultUrl?:    string | null;
-            ls2ResultUrl?:    string | null;
-            ls3ResultUrl?:    string | null;
-          }>;
-        } = await res.json();
+    refresh();
+  }, [refresh]);
 
-        const generated = data.jobs.filter((j) => j.generationStatus === "GENERATED");
-        if (generated.length === 0) return;
+  // ── Sync completed jobs from backend (multi-user support) ─────────────────
+  // Fetches all GENERATED products from DynamoDB and adds any result URLs not
+  // already in localStorage to the review queue. Called once on mount and can
+  // also be triggered manually via the Sync button.
+  const syncGeneratedFromBackend = useCallback(async () => {
+    setSyncing(true);
+    try {
+      const res = await fetch("/api/generate/jobs");
+      if (!res.ok) return;
+      const data: {
+        jobs: Array<{
+          salesCode:        string;
+          generationStatus: string;
+          ls1ResultUrl?:    string | null;
+          ls2ResultUrl?:    string | null;
+          ls3ResultUrl?:    string | null;
+        }>;
+      } = await res.json();
 
-        // Build a set of existing URLs to avoid duplicates
-        const existing    = loadImages();
-        const existingUrls = new Set(existing.map((img) => img.url));
+      const generated = data.jobs.filter((j) => j.generationStatus === "GENERATED");
+      if (generated.length === 0) return;
 
-        let added = false;
-        for (const job of generated) {
-          const slots: Array<{ slot: Slot; url: string | null | undefined }> = [
-            { slot: "ls1", url: job.ls1ResultUrl },
-            { slot: "ls2", url: job.ls2ResultUrl },
-            { slot: "ls3", url: job.ls3ResultUrl },
-          ];
-          for (const { slot, url } of slots) {
-            if (url && !existingUrls.has(url)) {
-              addImage({ salesCode: job.salesCode, slot, url });
-              existingUrls.add(url); // prevent re-adding within this loop
-              added = true;
-            }
+      // Build a set of existing URLs to avoid duplicates
+      const existing    = loadImages();
+      const existingUrls = new Set(existing.map((img) => img.url));
+
+      let added = false;
+      for (const job of generated) {
+        const slots: Array<{ slot: Slot; url: string | null | undefined }> = [
+          { slot: "ls1", url: job.ls1ResultUrl },
+          { slot: "ls2", url: job.ls2ResultUrl },
+          { slot: "ls3", url: job.ls3ResultUrl },
+        ];
+        for (const { slot, url } of slots) {
+          if (url && !existingUrls.has(url)) {
+            addImage({ salesCode: job.salesCode, slot, url });
+            existingUrls.add(url); // prevent re-adding within this loop
+            added = true;
           }
         }
-
-        if (added) refresh();
-      } catch {
-        // Network unavailable — localStorage is the fallback
       }
-    }
 
+      if (added) refresh();
+    } catch {
+      // Network unavailable — localStorage is the fallback
+    } finally {
+      setSyncing(false);
+    }
+  }, [refresh]);
+
+  useEffect(() => {
     syncGeneratedFromBackend();
-  }, [refresh]); // only on mount
+  }, [syncGeneratedFromBackend]); // only on mount
 
   function openPreview(img: GeneratedImage) {
     setPreviewId(img.id);
@@ -493,13 +498,19 @@ export default function ReviewPage() {
             Click a row to preview. Approve or reject from the list or the preview.
           </p>
         </div>
-        {images.length > 0 && (
-          <div className="flex gap-2 text-sm text-muted-foreground">
-            <span>{pendingCount} pending</span>
-            <span>·</span>
-            <span>{approvedCount} approved</span>
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {images.length > 0 && (
+            <div className="flex gap-2 text-sm text-muted-foreground">
+              <span>{pendingCount} pending</span>
+              <span>·</span>
+              <span>{approvedCount} approved</span>
+            </div>
+          )}
+          <Button size="sm" variant="ghost" onClick={syncGeneratedFromBackend} disabled={syncing} className="gap-1.5">
+            <RefreshCw className={`size-3.5 ${syncing ? "animate-spin" : ""}`} />
+            {syncing ? "Syncing…" : "Sync"}
+          </Button>
+        </div>
       </div>
 
       {/* Empty state */}

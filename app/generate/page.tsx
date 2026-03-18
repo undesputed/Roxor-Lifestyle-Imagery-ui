@@ -1,14 +1,75 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { loadJobSets, saveJobSets, deriveJobSetStatus, deleteJobSet, addJobSet, subscribeStore, updateSlotJob } from "@/lib/store";
+import { deriveJobSetStatus, addImage, loadImages, type Slot } from "@/lib/store";
 import type { JobSet, SingleGenerateResponse, ExecutionStatusResponse, Resolution } from "@/lib/types";
-import { Trash2, ChevronRight, Zap, Clock, Search, X, RotateCcw, Loader2 } from "lucide-react";
+import { Trash2, ChevronRight, Zap, Clock, Search, X, RotateCcw, Loader2, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+// ─── Backend job shape (from GET /generate/jobs) ──────────────────────────────
+
+type BackendJob = {
+  jobSetId:         string;
+  salesCode:        string;
+  executionArn:     string | null;
+  createdAt:        string;
+  resolution:       string;
+  generationStatus: string;
+  ls1ResultUrl?:    string | null;
+  ls2ResultUrl?:    string | null;
+  ls3ResultUrl?:    string | null;
+};
+
+function backendJobToJobSet(j: BackendJob): JobSet {
+  const isGenerated = j.generationStatus === "GENERATED";
+  const isFailed    = j.generationStatus === "FAILED";
+  return {
+    jobSetId:     j.jobSetId,
+    salesCode:    j.salesCode,
+    createdAt:    j.createdAt || new Date().toISOString(),
+    resolution:   (j.resolution as Resolution) ?? "2K",
+    executionArn: j.executionArn ?? undefined,
+    jobs: {
+      ls1: isGenerated && j.ls1ResultUrl
+        ? { taskId: null, status: "success" as const, resultUrl: j.ls1ResultUrl }
+        : isFailed ? { taskId: null, status: "failed" as const }
+        : { taskId: null, status: "polling" as const },
+      ls2: isGenerated && j.ls2ResultUrl
+        ? { taskId: null, status: "success" as const, resultUrl: j.ls2ResultUrl }
+        : isFailed ? { taskId: null, status: "failed" as const }
+        : { taskId: null, status: "polling" as const },
+      ls3: isGenerated && j.ls3ResultUrl
+        ? { taskId: null, status: "success" as const, resultUrl: j.ls3ResultUrl }
+        : isFailed ? { taskId: null, status: "failed" as const }
+        : { taskId: null, status: "polling" as const },
+      companions: [],
+    },
+  };
+}
+
+// ─── Dismissed job IDs (persisted so deletes survive refresh) ─────────────────
+
+const DISMISSED_KEY = "roxor_dismissed_jobs";
+
+function loadDismissed(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = localStorage.getItem(DISMISSED_KEY);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissed(ids: Set<string>) {
+  try {
+    localStorage.setItem(DISMISSED_KEY, JSON.stringify([...ids]));
+  } catch { /* ignore */ }
+}
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
@@ -52,13 +113,7 @@ function formatTimeAgo(date: Date): string {
 
 // ─── Elapsed timer ────────────────────────────────────────────────────────────
 
-function ElapsedTimer({
-  createdAt,
-  status,
-}: {
-  createdAt: string;
-  status: OverallStatus;
-}) {
+function ElapsedTimer({ createdAt, status }: { createdAt: string; status: OverallStatus }) {
   const startMs = new Date(createdAt).getTime();
   const [elapsed, setElapsed] = useState(() => Date.now() - startMs);
 
@@ -69,14 +124,10 @@ function ElapsedTimer({
   }, [startMs, status]);
 
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 text-xs font-mono tabular-nums",
-        status === "in_progress"
-          ? "text-blue-600 dark:text-blue-400"
-          : "text-muted-foreground"
-      )}
-    >
+    <span className={cn(
+      "inline-flex items-center gap-1 text-xs font-mono tabular-nums",
+      status === "in_progress" ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground"
+    )}>
       <Clock className="size-3 shrink-0" />
       {formatDuration(elapsed)}
     </span>
@@ -96,14 +147,11 @@ function SlotDots({ jobSet }: { jobSet: JobSet }) {
     <div className="flex items-center gap-1.5">
       {slots.map(({ label, job }) => {
         const color =
-          job.status === "success"
-            ? "bg-green-500"
-            : job.status === "failed"
-            ? "bg-red-500"
-            : job.status === "polling" || job.status === "submitted"
+          job.status === "success"  ? "bg-green-500" :
+          job.status === "failed"   ? "bg-red-500" :
+          job.status === "polling" || job.status === "submitted"
             ? "bg-blue-400 animate-pulse"
             : "bg-muted-foreground/20";
-
         return (
           <div key={label} className="flex flex-col items-center gap-0.5">
             <div className={`size-2.5 rounded-full ${color}`} />
@@ -130,9 +178,7 @@ function EmptyState() {
         <strong>Generate</strong> button on any product row.
       </p>
       <Link href="/products" className="mt-4">
-        <Button variant="outline" size="sm">
-          Go to Products
-        </Button>
+        <Button variant="outline" size="sm">Go to Products</Button>
       </Link>
     </div>
   );
@@ -146,10 +192,10 @@ function QueueRow({
   onDelete,
   onRerun,
 }: {
-  jobSet: JobSet;
+  jobSet:      JobSet;
   isRerunning: boolean;
-  onDelete: (id: string) => void;
-  onRerun: (jobSet: JobSet) => void;
+  onDelete:    (id: string) => void;
+  onRerun:     (jobSet: JobSet) => void;
 }) {
   const overallStatus  = deriveJobSetStatus(jobSet);
   const createdAt      = new Date(jobSet.createdAt);
@@ -162,10 +208,8 @@ function QueueRow({
       "flex items-center gap-4 px-4 py-3 rounded-lg border bg-card hover:bg-muted/30 transition-colors group",
       isRerunning && "opacity-60 pointer-events-none"
     )}>
-      {/* Slot progress dots */}
       <SlotDots jobSet={jobSet} />
 
-      {/* Main info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-mono text-sm font-semibold">{jobSet.salesCode}</span>
@@ -177,56 +221,30 @@ function QueueRow({
         <div className="flex items-center gap-3 mt-0.5">
           <p className="text-xs text-muted-foreground">
             Started {timeAgo}
-            {companionCount > 0 && (
-              <> · {companionsDone}/{companionCount} companions done</>
-            )}
+            {companionCount > 0 && <> · {companionsDone}/{companionCount} companions done</>}
           </p>
           <ElapsedTimer createdAt={jobSet.createdAt} status={overallStatus} />
         </div>
       </div>
 
-      {/* Actions */}
       <div className="flex items-center gap-1 shrink-0">
-        {/* Re-run button — always visible (not just on hover) */}
         <button
-          onClick={(e) => {
-            e.preventDefault();
-            onRerun(jobSet);
-          }}
+          onClick={(e) => { e.preventDefault(); onRerun(jobSet); }}
           disabled={isRerunning}
           className={cn(
-            "flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors",
-            overallStatus === "failed"
-              ? "text-destructive hover:bg-destructive/10"
-              : overallStatus === "in_progress"
-              ? "text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950"
-              : "text-muted-foreground hover:text-foreground hover:bg-muted",
-            "opacity-0 group-hover:opacity-100"
+            "flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors opacity-0 group-hover:opacity-100",
+            overallStatus === "failed"      ? "text-destructive hover:bg-destructive/10" :
+            overallStatus === "in_progress" ? "text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950" :
+            "text-muted-foreground hover:text-foreground hover:bg-muted"
           )}
-          title={
-            overallStatus === "failed"
-              ? "Re-run — start a fresh execution"
-              : overallStatus === "in_progress"
-              ? "Re-run — abandon current and start fresh"
-              : "Re-run"
-          }
+          title={overallStatus === "failed" ? "Re-run — start a fresh execution" : "Re-run"}
         >
-          {isRerunning ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <RotateCcw className="size-3.5" />
-          )}
-          <span className="hidden sm:inline">
-            {isRerunning ? "Starting…" : "Re-run"}
-          </span>
+          {isRerunning ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}
+          <span className="hidden sm:inline">{isRerunning ? "Starting…" : "Re-run"}</span>
         </button>
 
-        {/* Delete button */}
         <button
-          onClick={(e) => {
-            e.preventDefault();
-            onDelete(jobSet.jobSetId);
-          }}
+          onClick={(e) => { e.preventDefault(); onDelete(jobSet.jobSetId); }}
           className="p-1.5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
           title="Remove from queue"
         >
@@ -237,8 +255,7 @@ function QueueRow({
           href={`/generate/${jobSet.jobSetId}`}
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground ml-1"
         >
-          View
-          <ChevronRight className="size-3.5" />
+          View <ChevronRight className="size-3.5" />
         </Link>
       </div>
     </div>
@@ -249,44 +266,18 @@ function QueueRow({
 
 const PAGE_SIZE = 20;
 
-function Pagination({
-  total,
-  page,
-  onPage,
-}: {
-  total: number;
-  page: number;
-  onPage: (p: number) => void;
-}) {
+function Pagination({ total, page, onPage }: { total: number; page: number; onPage: (p: number) => void }) {
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   if (pageCount <= 1) return null;
-
   return (
     <div className="flex items-center justify-between text-xs text-muted-foreground pt-2">
       <span>
-        {Math.min((page - 1) * PAGE_SIZE + 1, total)}–
-        {Math.min(page * PAGE_SIZE, total)} of {total}
+        {Math.min((page - 1) * PAGE_SIZE + 1, total)}–{Math.min(page * PAGE_SIZE, total)} of {total}
       </span>
       <div className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 px-2"
-          disabled={page === 1}
-          onClick={() => onPage(page - 1)}
-        >
-          Previous
-        </Button>
+        <Button variant="outline" size="sm" className="h-7 px-2" disabled={page === 1} onClick={() => onPage(page - 1)}>Previous</Button>
         <span>Page {page} of {pageCount}</span>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 px-2"
-          disabled={page === pageCount}
-          onClick={() => onPage(page + 1)}
-        >
-          Next
-        </Button>
+        <Button variant="outline" size="sm" className="h-7 px-2" disabled={page === pageCount} onClick={() => onPage(page + 1)}>Next</Button>
       </div>
     </div>
   );
@@ -295,148 +286,115 @@ function Pagination({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function GeneratePage() {
-  // Always start with [] so server and client render the same HTML.
-  // After mount, load from localStorage and subscribe to store changes.
-  const [jobSets, setJobSets] = useState<JobSet[]>([]);
-
-  useEffect(() => {
-    setJobSets(loadJobSets());
-    return subscribeStore(() => setJobSets(loadJobSets()));
-  }, []);
-
-  // ── Sync jobs from backend (multi-user support) ────────────────────────────
-  // On mount, fetch all generation jobs stored in DynamoDB so jobs started by
-  // other users/browsers appear in this queue. Jobs already in localStorage
-  // are kept as-is (localStorage has the most up-to-date slot statuses).
-  useEffect(() => {
-    async function syncFromBackend() {
-      try {
-        const res = await fetch("/api/generate/jobs");
-        if (!res.ok) return;
-        const data: { jobs: Array<{
-          jobSetId:         string;        // may be "db-{salesCode}" for older records
-          salesCode:        string;
-          executionArn:     string | null;
-          createdAt:        string;
-          resolution:       string;
-          generationStatus: string;        // "GENERATING" | "GENERATED"
-          ls1ResultUrl?:    string | null;
-          ls2ResultUrl?:    string | null;
-          ls3ResultUrl?:    string | null;
-        }> } = await res.json();
-
-        const existing         = loadJobSets();
-        const existingIds      = new Set(existing.map((s) => s.jobSetId));
-        // Also deduplicate by salesCode so we never show the same product twice
-        const existingCodes    = new Set(existing.map((s) => s.salesCode));
-
-        const newJobSets: JobSet[] = data.jobs
-          .filter((j) =>
-            !existingIds.has(j.jobSetId) && !existingCodes.has(j.salesCode)
-          )
-          .map((j) => {
-            const isGenerated = j.generationStatus === "GENERATED";
-            return {
-              jobSetId:     j.jobSetId,
-              salesCode:    j.salesCode,
-              createdAt:    j.createdAt || new Date().toISOString(),
-              resolution:   (j.resolution as Resolution) ?? "2K",
-              executionArn: j.executionArn ?? undefined,
-              jobs: {
-                // For GENERATED jobs set success + resultUrl so the queue row
-                // shows green dots immediately without needing a status poll.
-                ls1: isGenerated && j.ls1ResultUrl
-                  ? { taskId: null, status: "success" as const, resultUrl: j.ls1ResultUrl }
-                  : { taskId: null, status: "polling" as const },
-                ls2: isGenerated && j.ls2ResultUrl
-                  ? { taskId: null, status: "success" as const, resultUrl: j.ls2ResultUrl }
-                  : { taskId: null, status: "polling" as const },
-                ls3: isGenerated && j.ls3ResultUrl
-                  ? { taskId: null, status: "success" as const, resultUrl: j.ls3ResultUrl }
-                  : { taskId: null, status: "polling" as const },
-                companions: [],
-              },
-            };
-          });
-
-        if (newJobSets.length > 0) {
-          // Prepend backend jobs (newest-first from Lambda) before localStorage jobs
-          saveJobSets([...newJobSets, ...existing]);
-        }
-      } catch {
-        // Network unavailable or API not yet deployed — localStorage is the fallback
-      }
-    }
-
-    syncFromBackend();
-  }, []); // only on mount
-
-  // ── Background status refresh ──────────────────────────────────────────────
-  // On mount (page refresh) and every 30s, check the execution status of all
-  // in-progress jobs so the list stays accurate without visiting the detail page.
-  useEffect(() => {
-    async function refreshInProgress() {
-      const running = loadJobSets().filter(
-        (s) => deriveJobSetStatus(s) === "in_progress" && s.executionArn
-      );
-      await Promise.allSettled(
-        running.map(async (jobSet) => {
-          try {
-            const encoded = encodeURIComponent(jobSet.executionArn!);
-            const res = await fetch(`/api/generate/execution-status/${encoded}`);
-            if (!res.ok) return;
-            const data: ExecutionStatusResponse = await res.json();
-
-            if (data.executionStatus === "SUCCEEDED") {
-              (["ls1", "ls2", "ls3"] as const).forEach((slot) => {
-                updateSlotJob(jobSet.jobSetId, slot, {
-                  status:    "success",
-                  resultUrl: data.slots[slot].resultUrl,
-                });
-              });
-            } else if (data.executionStatus === "FAILED") {
-              const cause = data.cause ?? data.error ?? "Pipeline failed";
-              (["ls1", "ls2", "ls3"] as const).forEach((slot) => {
-                updateSlotJob(jobSet.jobSetId, slot, {
-                  status:  "failed",
-                  failMsg: cause,
-                });
-              });
-            }
-            // RUNNING → nothing to update yet
-          } catch {
-            // network error — skip silently, will retry on next interval
-          }
-        })
-      );
-    }
-
-    refreshInProgress(); // immediate check on mount / refresh
-    const id = setInterval(refreshInProgress, 30_000);
-    return () => clearInterval(id);
-  }, []);
-
+  const [jobSets,   setJobSets]   = useState<JobSet[]>([]);
+  const [loading,   setLoading]   = useState(true);
   const [statusFilter, setStatusFilter] = useState<"all" | "in_progress" | "complete" | "failed">("all");
   const [searchQuery,  setSearchQuery]  = useState("");
   const [page,         setPage]         = useState(1);
+  const [rerunningId,  setRerunningId]  = useState<string | null>(null);
+  const [rerunError,   setRerunError]   = useState<string | null>(null);
 
-  // Tracks which jobSetId is currently being re-run (shows spinner on that row)
-  const [rerunningId, setRerunningId] = useState<string | null>(null);
-  // Inline error for re-run failures (shown as a small banner)
-  const [rerunError,  setRerunError]  = useState<string | null>(null);
+  // Dismissed job IDs — only stored as IDs in localStorage to keep deletes across refreshes
+  const dismissedRef = useRef<Set<string>>(new Set());
+  useEffect(() => { dismissedRef.current = loadDismissed(); }, []);
+
+  // ── Fetch jobs from DynamoDB ───────────────────────────────────────────────
+  const fetchAndUpdate = useCallback(async () => {
+    try {
+      const res = await fetch("/api/generate/jobs");
+      if (!res.ok) return;
+      const data: { jobs: BackendJob[] } = await res.json();
+
+      // Filter out dismissed jobs
+      const visible = data.jobs.filter(j => !dismissedRef.current.has(j.jobSetId));
+      const mapped  = visible.map(backendJobToJobSet);
+
+      // Push any GENERATED jobs to the review localStorage queue (deduplicated by URL).
+      // This ensures images appear in Review even when the user never opened the Review page
+      // while polling was active.
+      const existingReviewUrls = new Set(loadImages().map(img => img.url));
+      visible.forEach(j => {
+        if (j.generationStatus === "GENERATED") {
+          (["ls1", "ls2", "ls3"] as Slot[]).forEach(slot => {
+            const url = j[`${slot}ResultUrl` as keyof typeof j] as string | null | undefined;
+            if (url && !existingReviewUrls.has(url)) {
+              addImage({ salesCode: j.salesCode, slot, url });
+              existingReviewUrls.add(url);
+            }
+          });
+        }
+      });
+
+      // For GENERATING jobs with executionArn, also poll Step Functions for slot-level dots
+      const running = mapped.filter(s => s.executionArn && deriveJobSetStatus(s) === "in_progress");
+      if (running.length > 0) {
+        const execResults = await Promise.allSettled(
+          running.map(async js => {
+            const encoded = encodeURIComponent(js.executionArn!);
+            const r = await fetch(`/api/generate/execution-status/${encoded}`);
+            if (!r.ok) return null;
+            const d: ExecutionStatusResponse = await r.json();
+            return { jobSetId: js.jobSetId, salesCode: js.salesCode, exec: d };
+          })
+        );
+        const execMap = new Map<string, { salesCode: string; exec: ExecutionStatusResponse }>();
+        execResults.forEach(r => {
+          if (r.status === "fulfilled" && r.value) execMap.set(r.value.jobSetId, { salesCode: r.value.salesCode, exec: r.value.exec });
+        });
+        mapped.forEach((js, i) => {
+          const entry = execMap.get(js.jobSetId);
+          if (!entry) return;
+          const { exec } = entry;
+          if (exec.executionStatus === "SUCCEEDED") {
+            // Push images to review queue (deduplicated by URL)
+            (["ls1", "ls2", "ls3"] as Slot[]).forEach(slot => {
+              const url = exec.slots[slot]?.resultUrl;
+              if (url && !existingReviewUrls.has(url)) {
+                addImage({ salesCode: js.salesCode, slot, url });
+                existingReviewUrls.add(url);
+              }
+            });
+            mapped[i] = { ...js, jobs: { ...js.jobs,
+              ls1: { taskId: null, status: "success", resultUrl: exec.slots.ls1.resultUrl },
+              ls2: { taskId: null, status: "success", resultUrl: exec.slots.ls2.resultUrl },
+              ls3: { taskId: null, status: "success", resultUrl: exec.slots.ls3.resultUrl },
+            }};
+          } else if (exec.executionStatus === "FAILED") {
+            const failMsg = exec.cause ?? exec.error ?? "Pipeline failed";
+            mapped[i] = { ...js, jobs: { ...js.jobs,
+              ls1: { taskId: null, status: "failed", failMsg },
+              ls2: { taskId: null, status: "failed", failMsg },
+              ls3: { taskId: null, status: "failed", failMsg },
+            }};
+          }
+        });
+      }
+
+      setJobSets(mapped);
+    } catch { /* network error — keep showing last known state */ }
+    finally { setLoading(false); }
+  }, []);
+
+  // Initial fetch + 30s poll
+  useEffect(() => {
+    fetchAndUpdate();
+    const id = setInterval(fetchAndUpdate, 30_000);
+    return () => clearInterval(id);
+  }, [fetchAndUpdate]);
+
+  // ── Delete ────────────────────────────────────────────────────────────────
 
   function handleDelete(id: string) {
-    deleteJobSet(id); // store emits change → subscribeStore triggers setJobSets
+    dismissedRef.current = new Set([...dismissedRef.current, id]);
+    saveDismissed(dismissedRef.current);
+    setJobSets(prev => prev.filter(s => s.jobSetId !== id));
   }
 
   // ── Re-run ────────────────────────────────────────────────────────────────
-  // Calls POST /generate/single with the same salesCode + resolution.
-  // On success: removes old JobSet, prepends new one, stays on this page.
 
   async function handleRerun(jobSet: JobSet) {
     setRerunningId(jobSet.jobSetId);
     setRerunError(null);
-
     try {
       const res = await fetch("/api/generate/single", {
         method:  "POST",
@@ -444,24 +402,12 @@ export default function GeneratePage() {
         body:    JSON.stringify({ salesCode: jobSet.salesCode, resolution: jobSet.resolution }),
       });
       const data: SingleGenerateResponse = await res.json();
-      if (!res.ok)
-        throw new Error((data as { detail?: string }).detail ?? `Re-run failed (${res.status})`);
+      if (!res.ok) throw new Error((data as { detail?: string }).detail ?? `Re-run failed (${res.status})`);
 
-      // Replace old entry with new one
-      deleteJobSet(jobSet.jobSetId);
-      addJobSet({
-        jobSetId:     data.jobSetId,
-        salesCode:    data.salesCode,
-        createdAt:    new Date().toISOString(),
-        resolution:   jobSet.resolution,
-        executionArn: data.executionArn,
-        jobs: {
-          ls1:        { taskId: null, status: "polling" },
-          ls2:        { taskId: null, status: "polling" },
-          ls3:        { taskId: null, status: "polling" },
-          companions: [],
-        },
-      }); // store emits change → subscribeStore triggers setJobSets
+      // Dismiss old job so it doesn't reappear before DynamoDB updates
+      dismissedRef.current = new Set([...dismissedRef.current, jobSet.jobSetId]);
+      saveDismissed(dismissedRef.current);
+      await fetchAndUpdate();
     } catch (e: unknown) {
       setRerunError(e instanceof Error ? e.message : "Re-run failed");
     } finally {
@@ -471,45 +417,34 @@ export default function GeneratePage() {
 
   // ── Filtering ──────────────────────────────────────────────────────────────
 
-  const afterStatus =
-    statusFilter === "all"
-      ? jobSets
-      : jobSets.filter((s) => deriveJobSetStatus(s) === statusFilter);
+  const afterStatus = statusFilter === "all"
+    ? jobSets
+    : jobSets.filter(s => deriveJobSetStatus(s) === statusFilter);
 
   const afterSearch = searchQuery.trim()
-    ? afterStatus.filter((s) =>
-        s.salesCode.toLowerCase().includes(searchQuery.trim().toLowerCase())
-      )
+    ? afterStatus.filter(s => s.salesCode.toLowerCase().includes(searchQuery.trim().toLowerCase()))
     : afterStatus;
 
   const totalFiltered = afterSearch.length;
-
-  // ── Pagination ─────────────────────────────────────────────────────────────
-
-  const safePage  = Math.min(page, Math.max(1, Math.ceil(totalFiltered / PAGE_SIZE)));
-  const pageSlice = afterSearch.slice(
-    (safePage - 1) * PAGE_SIZE,
-    safePage * PAGE_SIZE
-  );
-
-  function handleFilterChange(f: typeof statusFilter) {
-    setStatusFilter(f);
-    setPage(1);
-  }
-
-  function handleSearchChange(q: string) {
-    setSearchQuery(q);
-    setPage(1);
-  }
-
-  // ── Counts ─────────────────────────────────────────────────────────────────
+  const safePage      = Math.min(page, Math.max(1, Math.ceil(totalFiltered / PAGE_SIZE)));
+  const pageSlice     = afterSearch.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const counts = {
     all:         jobSets.length,
-    in_progress: jobSets.filter((s) => deriveJobSetStatus(s) === "in_progress").length,
-    complete:    jobSets.filter((s) => deriveJobSetStatus(s) === "complete").length,
-    failed:      jobSets.filter((s) => deriveJobSetStatus(s) === "failed").length,
+    in_progress: jobSets.filter(s => deriveJobSetStatus(s) === "in_progress").length,
+    complete:    jobSets.filter(s => deriveJobSetStatus(s) === "complete").length,
+    failed:      jobSets.filter(s => deriveJobSetStatus(s) === "failed").length,
   };
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="max-w-4xl mx-auto flex items-center justify-center py-20">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -517,27 +452,27 @@ export default function GeneratePage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-semibold tracking-tight">Generation Queue</h2>
-          <p className="text-muted-foreground mt-1">
-            Track all active and completed generation jobs.
-          </p>
+          <p className="text-muted-foreground mt-1">Track all active and completed generation jobs.</p>
         </div>
-        {jobSets.length > 0 && (
-          <Link href="/products">
-            <Button size="sm" variant="outline" className="gap-1.5">
-              <Zap className="size-3.5" />
-              New Generation
-            </Button>
-          </Link>
-        )}
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={fetchAndUpdate} className="gap-1.5">
+            <RefreshCw className="size-3.5" /> Refresh
+          </Button>
+          {jobSets.length > 0 && (
+            <Link href="/products">
+              <Button size="sm" variant="outline" className="gap-1.5">
+                <Zap className="size-3.5" /> New Generation
+              </Button>
+            </Link>
+          )}
+        </div>
       </div>
 
       {/* Re-run error banner */}
       {rerunError && (
         <div className="flex items-center justify-between rounded-md border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           <span>Re-run failed: {rerunError}</span>
-          <button onClick={() => setRerunError(null)} className="ml-4 underline opacity-70 hover:opacity-100">
-            Dismiss
-          </button>
+          <button onClick={() => setRerunError(null)} className="ml-4 underline opacity-70 hover:opacity-100">Dismiss</button>
         </div>
       )}
 
@@ -545,47 +480,34 @@ export default function GeneratePage() {
         <EmptyState />
       ) : (
         <>
-          {/* Status filter tabs + search row */}
+          {/* Status filter tabs + search */}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-1 flex-wrap">
               {(["all", "in_progress", "complete", "failed"] as const).map((f) => (
                 <button
                   key={f}
-                  onClick={() => handleFilterChange(f)}
+                  onClick={() => { setStatusFilter(f); setPage(1); }}
                   className={cn(
                     "px-3 py-1.5 rounded-md text-sm transition-colors",
-                    statusFilter === f
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-muted"
+                    statusFilter === f ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
                   )}
                 >
-                  {f === "all"
-                    ? "All"
-                    : f === "in_progress"
-                    ? "In Progress"
-                    : f.charAt(0).toUpperCase() + f.slice(1)}
-                  {counts[f] > 0 && (
-                    <span className="ml-1 text-xs opacity-70">({counts[f]})</span>
-                  )}
+                  {f === "all" ? "All" : f === "in_progress" ? "In Progress" : f.charAt(0).toUpperCase() + f.slice(1)}
+                  {counts[f] > 0 && <span className="ml-1 text-xs opacity-70">({counts[f]})</span>}
                 </button>
               ))}
             </div>
-
-            {/* Search by sales code */}
             <div className="relative w-full sm:w-56">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
               <input
                 type="text"
                 placeholder="Search sales code…"
                 value={searchQuery}
-                onChange={(e) => handleSearchChange(e.target.value)}
+                onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
                 className="h-9 w-full rounded-md border border-input bg-background pl-8 pr-8 py-1 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               />
               {searchQuery && (
-                <button
-                  onClick={() => handleSearchChange("")}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
+                <button onClick={() => { setSearchQuery(""); setPage(1); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                   <X className="size-3.5" />
                 </button>
               )}
@@ -598,20 +520,16 @@ export default function GeneratePage() {
               <CardTitle className="text-sm font-semibold">
                 {totalFiltered} job{totalFiltered !== 1 ? "s" : ""}
                 {(statusFilter !== "all" || searchQuery) && (
-                  <span className="ml-1 font-normal text-muted-foreground">
-                    (filtered from {jobSets.length})
-                  </span>
+                  <span className="ml-1 font-normal text-muted-foreground">(filtered from {jobSets.length})</span>
                 )}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
               {totalFiltered === 0 ? (
-                <p className="text-sm text-muted-foreground py-2">
-                  No jobs match this filter.
-                </p>
+                <p className="text-sm text-muted-foreground py-2">No jobs match this filter.</p>
               ) : (
                 <>
-                  {pageSlice.map((set) => (
+                  {pageSlice.map(set => (
                     <QueueRow
                       key={set.jobSetId}
                       jobSet={set}
@@ -620,11 +538,7 @@ export default function GeneratePage() {
                       onRerun={handleRerun}
                     />
                   ))}
-                  <Pagination
-                    total={totalFiltered}
-                    page={safePage}
-                    onPage={setPage}
-                  />
+                  <Pagination total={totalFiltered} page={safePage} onPage={setPage} />
                 </>
               )}
             </CardContent>

@@ -51,78 +51,79 @@
 :root {
   --radius: 0.5rem;
 
-  --background: oklch(0.98 0 0);
-  --foreground: oklch(0.14 0.01 260);
+  /* Roxor palette mapping (Option A): teal primary + deep navy ink */
+  --background: #f7fbfc;
+  --foreground: #051126;
 
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.14 0.01 260);
+  --card: #ffffff;
+  --card-foreground: #051126;
 
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.14 0.01 260);
+  --popover: #ffffff;
+  --popover-foreground: #051126;
 
-  --primary: oklch(0.22 0.02 260);
-  --primary-foreground: oklch(0.98 0 0);
+  --primary: #007f97;
+  --primary-foreground: #ffffff;
 
-  --secondary: oklch(0.95 0.005 260);
-  --secondary-foreground: oklch(0.22 0.02 260);
+  --secondary: #e9f2f4;
+  --secondary-foreground: #051126;
 
-  --muted: oklch(0.95 0.005 260);
-  --muted-foreground: oklch(0.50 0.01 260);
+  --muted: #eef4f4;
+  --muted-foreground: color-mix(in oklab, #051126 62%, #a4bcbc 38%);
 
-  --accent: oklch(0.95 0.005 260);
-  --accent-foreground: oklch(0.22 0.02 260);
+  --accent: color-mix(in oklab, #a4bcbc 45%, #ffffff 55%);
+  --accent-foreground: #051126;
 
   --destructive: oklch(0.58 0.22 27);
-  --border: oklch(0.90 0.005 260);
-  --input: oklch(0.90 0.005 260);
-  --ring: oklch(0.65 0.01 260);
+  --border: color-mix(in oklab, #051126 12%, #ffffff 88%);
+  --input: color-mix(in oklab, #051126 12%, #ffffff 88%);
+  --ring: #007f97;
 
-  --sidebar: oklch(0.97 0.003 260);
-  --sidebar-foreground: oklch(0.14 0.01 260);
-  --sidebar-primary: oklch(0.22 0.02 260);
-  --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.93 0.005 260);
-  --sidebar-accent-foreground: oklch(0.22 0.02 260);
-  --sidebar-border: oklch(0.90 0.005 260);
-  --sidebar-ring: oklch(0.65 0.01 260);
+  --sidebar: #e9f2f4;
+  --sidebar-foreground: #051126;
+  --sidebar-primary: #007f97;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: color-mix(in oklab, #a4bcbc 40%, #ffffff 60%);
+  --sidebar-accent-foreground: #051126;
+  --sidebar-border: color-mix(in oklab, #051126 10%, #ffffff 90%);
+  --sidebar-ring: #007f97;
 }
 
 /* ── Dark mode ──────────────────────────────────────── */
 .dark {
-  --background: oklch(0.13 0.01 260);
-  --foreground: oklch(0.94 0.005 260);
+  --background: #051126;
+  --foreground: #eaf2f4;
 
-  --card: oklch(0.17 0.01 260);
-  --card-foreground: oklch(0.94 0.005 260);
+  --card: color-mix(in oklab, #051126 84%, #ffffff 16%);
+  --card-foreground: #eaf2f4;
 
-  --popover: oklch(0.17 0.01 260);
-  --popover-foreground: oklch(0.94 0.005 260);
+  --popover: color-mix(in oklab, #051126 82%, #ffffff 18%);
+  --popover-foreground: #eaf2f4;
 
-  --primary: oklch(0.92 0.005 260);
-  --primary-foreground: oklch(0.17 0.01 260);
+  --primary: #007f97;
+  --primary-foreground: #ffffff;
 
-  --secondary: oklch(0.22 0.01 260);
-  --secondary-foreground: oklch(0.94 0.005 260);
+  --secondary: color-mix(in oklab, #a4bcbc 18%, #051126 82%);
+  --secondary-foreground: #eaf2f4;
 
-  --muted: oklch(0.22 0.01 260);
-  --muted-foreground: oklch(0.60 0.01 260);
+  --muted: color-mix(in oklab, #a4bcbc 14%, #051126 86%);
+  --muted-foreground: color-mix(in oklab, #a4bcbc 85%, #ffffff 15%);
 
-  --accent: oklch(0.26 0.01 260);
-  --accent-foreground: oklch(0.94 0.005 260);
+  --accent: color-mix(in oklab, #7c587f 24%, #051126 76%);
+  --accent-foreground: #eaf2f4;
 
   --destructive: oklch(0.65 0.20 22);
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 10%);
-  --ring: oklch(0.50 0.01 260);
+  --border: color-mix(in oklab, #a4bcbc 18%, transparent 82%);
+  --input: color-mix(in oklab, #a4bcbc 22%, transparent 78%);
+  --ring: #007f97;
 
-  --sidebar: oklch(0.16 0.01 260);
-  --sidebar-foreground: oklch(0.94 0.005 260);
-  --sidebar-primary: oklch(0.92 0.005 260);
-  --sidebar-primary-foreground: oklch(0.17 0.01 260);
-  --sidebar-accent: oklch(0.22 0.01 260);
-  --sidebar-accent-foreground: oklch(0.94 0.005 260);
-  --sidebar-border: oklch(1 0 0 / 8%);
-  --sidebar-ring: oklch(0.50 0.01 260);
+  --sidebar: color-mix(in oklab, #051126 92%, #ffffff 8%);
+  --sidebar-foreground: #eaf2f4;
+  --sidebar-primary: #007f97;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: color-mix(in oklab, #a4bcbc 14%, #051126 86%);
+  --sidebar-accent-foreground: #eaf2f4;
+  --sidebar-border: color-mix(in oklab, #a4bcbc 18%, transparent 82%);
+  --sidebar-ring: #007f97;
 }
 
 @layer base {
