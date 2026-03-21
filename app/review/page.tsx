@@ -14,7 +14,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { DownloadIcon, EyeIcon, RefreshCw } from "lucide-react";
+import { Check, CreditCard, DownloadIcon, EyeIcon, List, RefreshCw, X } from "lucide-react";
 import {
   loadImages,
   addImage,
@@ -409,11 +409,197 @@ function ImageRow({
   );
 }
 
+// ── Card view ─────────────────────────────────────────────────────────────────
+
+function CardView({
+  images,
+  onRefresh,
+  onExitToTable,
+}: {
+  images: GeneratedImage[];
+  onRefresh: () => void;
+  onExitToTable: () => void;
+}) {
+  const [cardQueue, setCardQueue] = useState<string[]>(() =>
+    images.filter((i) => i.status === "pending").map((i) => i.id)
+  );
+  const [rerunOpen, setRerunOpen] = useState(false);
+  const [transitioning, setTransitioning] = useState(false);
+
+  const currentId = cardQueue[0] ?? null;
+  const currentImg = currentId ? (images.find((i) => i.id === currentId) ?? null) : null;
+
+  // Reset rerun panel when card changes (during render, not in effect)
+  const [lastCardId, setLastCardId] = useState<string | null>(currentId);
+  if (currentId !== lastCardId) {
+    setLastCardId(currentId);
+    setRerunOpen(false);
+  }
+
+  function advance(action: () => void) {
+    if (transitioning) return;
+    setTransitioning(true);
+    setTimeout(() => {
+      action();
+      setTransitioning(false);
+    }, 350);
+  }
+
+  function handleApprove() {
+    if (!currentImg) return;
+    advance(() => {
+      updateImageStatus(currentImg.id, "approved");
+      onRefresh();
+      setCardQueue((q) => q.slice(1));
+    });
+  }
+
+  function handleDecline() {
+    if (!currentImg) return;
+    advance(() => {
+      updateImageStatus(currentImg.id, "rejected");
+      onRefresh();
+      setCardQueue((q) => q.slice(1));
+    });
+  }
+
+  function handleSkip() {
+    advance(() => {
+      setCardQueue((q) => [...q.slice(1), q[0]]);
+      setRerunOpen(false);
+    });
+  }
+
+  // Completion state — all pending images have been approved or declined
+  if (cardQueue.length === 0) {
+    return (
+      <Card className="max-w-md mx-auto">
+        <CardContent className="pt-10 pb-10 flex flex-col items-center gap-5 text-center">
+          <div className="w-12 h-12 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+            <Check className="size-6 text-green-600 dark:text-green-400" />
+          </div>
+          <div className="space-y-1">
+            <p className="font-semibold">All pending images reviewed</p>
+            <p className="text-sm text-muted-foreground">
+              Switch back to the table to see your decisions or upload approved images.
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={onExitToTable}>
+            <List className="size-3.5 mr-1.5" />
+            Back to Table
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!currentImg) return null;
+
+  return (
+    <div className="flex flex-col items-center gap-6 max-w-2xl mx-auto">
+      {/* Progress indicator */}
+      <p className="text-xs text-muted-foreground self-end">
+        {cardQueue.length} pending remaining
+      </p>
+
+      {/* Decline | Image | Approve */}
+      <div className="flex items-center gap-4 w-full">
+        {/* Decline button */}
+        <button
+          onClick={handleDecline}
+          disabled={transitioning}
+          title="Decline"
+          className="flex-shrink-0 w-14 h-14 rounded-full bg-red-100 hover:bg-red-200 dark:bg-red-900/30 dark:hover:bg-red-900/50 text-red-600 dark:text-red-400 flex items-center justify-center transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <X className="size-6" />
+        </button>
+
+        {/* Image card */}
+        <div className="relative flex-1 rounded-xl overflow-hidden shadow-md">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={currentImg.url}
+            alt={`${currentImg.salesCode} ${currentImg.slot}`}
+            className={cn("w-full object-cover transition-opacity duration-300", transitioning && "opacity-30")}
+          />
+          {/* Loading spinner overlay */}
+          {transitioning && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <RefreshCw className="size-8 text-white animate-spin drop-shadow" />
+            </div>
+          )}
+          {/* Rerun icon — top-right corner */}
+          {!transitioning && (
+            <button
+              onClick={() => setRerunOpen((v) => !v)}
+              title="Rerun generation"
+              className={cn(
+                "absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center transition-colors",
+                rerunOpen
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-black/40 hover:bg-black/60 text-white"
+              )}
+            >
+              <RefreshCw className="size-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* Approve button */}
+        <button
+          onClick={handleApprove}
+          disabled={transitioning}
+          title="Approve"
+          className="flex-shrink-0 w-14 h-14 rounded-full bg-green-100 hover:bg-green-200 dark:bg-green-900/30 dark:hover:bg-green-900/50 text-green-600 dark:text-green-400 flex items-center justify-center transition-colors shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Check className="size-6" />
+        </button>
+      </div>
+
+      {/* Metadata + Skip */}
+      <div className="flex items-center gap-2 flex-wrap justify-center text-sm">
+        <span className="font-mono font-semibold">{currentImg.salesCode}</span>
+        <span className="text-muted-foreground">—</span>
+        <span className="font-mono uppercase text-xs font-medium">{currentImg.slot}</span>
+        <span className="text-muted-foreground text-xs">{SLOT_LABEL[currentImg.slot]}</span>
+        <span className="text-muted-foreground text-xs">·</span>
+        <span className="text-muted-foreground text-xs">{currentImg.generatedAt}</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="text-xs h-7 ml-1"
+          onClick={handleSkip}
+          disabled={transitioning}
+        >
+          Skip
+        </Button>
+      </div>
+
+      {/* Rerun panel */}
+      {rerunOpen && (
+        <div className="w-full">
+          <RerunPanel
+            salesCode={currentImg.salesCode}
+            slot={currentImg.slot}
+            onDone={() => {
+              setRerunOpen(false);
+              onRefresh();
+              setCardQueue((q) => q.slice(1));
+            }}
+            onCancel={() => setRerunOpen(false)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ReviewPage() {
   // Always start from a consistent SSR-safe state, then load localStorage after mount.
   const [images, setImages] = useState<GeneratedImage[]>([]);
+  const [viewMode, setViewMode] = useState<"table" | "card">("table");
   // Track the ID of the selected image; derive the object from images so it stays in sync
   const [previewId, setPreviewId] = useState<string | null>(null);
   const preview = images.find((i) => i.id === previewId) ?? null;
@@ -510,6 +696,37 @@ export default function ReviewPage() {
             <RefreshCw className={`size-3.5 ${syncing ? "animate-spin" : ""}`} />
             {syncing ? "Syncing…" : "Sync"}
           </Button>
+          {/* View mode toggle */}
+          {images.length > 0 && (
+            <div className="flex rounded-md border overflow-hidden">
+              <button
+                onClick={() => setViewMode("table")}
+                title="Table view"
+                className={cn(
+                  "px-2.5 py-1.5 text-xs flex items-center gap-1.5 transition-colors",
+                  viewMode === "table"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-background text-muted-foreground hover:bg-muted"
+                )}
+              >
+                <List className="size-3.5" />
+                Table
+              </button>
+              <button
+                onClick={() => setViewMode("card")}
+                title="Card review mode"
+                className={cn(
+                  "px-2.5 py-1.5 text-xs flex items-center gap-1.5 transition-colors border-l",
+                  viewMode === "card"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-background text-muted-foreground hover:bg-muted"
+                )}
+              >
+                <CreditCard className="size-3.5" />
+                Review
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -525,8 +742,17 @@ export default function ReviewPage() {
         </Card>
       )}
 
-      {/* List */}
-      {images.length > 0 && (
+      {/* Card review mode */}
+      {images.length > 0 && viewMode === "card" && (
+        <CardView
+          images={images}
+          onRefresh={refresh}
+          onExitToTable={() => setViewMode("table")}
+        />
+      )}
+
+      {/* Table view */}
+      {images.length > 0 && viewMode === "table" && (
         <div className="rounded-xl border overflow-hidden">
           <table className="w-full text-sm">
             <thead>
@@ -552,13 +778,15 @@ export default function ReviewPage() {
         </div>
       )}
 
-      {/* Preview dialog */}
-      <PreviewDialog
-        img={preview}
-        open={previewOpen}
-        onOpenChange={setPreviewOpen}
-        onChange={refresh}
-      />
+      {/* Preview dialog (table mode only) */}
+      {viewMode === "table" && (
+        <PreviewDialog
+          img={preview}
+          open={previewOpen}
+          onOpenChange={setPreviewOpen}
+          onChange={refresh}
+        />
+      )}
     </div>
   );
 }
