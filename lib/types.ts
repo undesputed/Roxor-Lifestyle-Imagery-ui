@@ -86,6 +86,8 @@ export type ExecutionStatusResponse = {
     ls2: { status: "pending" | "success" | "failed"; resultUrl?: string };
     ls3: { status: "pending" | "success" | "failed"; resultUrl?: string };
   };
+  /** Companion cutout results — present when executionStatus is "SUCCEEDED" */
+  companionCutouts?: Array<{ salesCode: string; resultUrl: string }>;
   /** Present when executionStatus is "FAILED" */
   error?: string;
   cause?: string;

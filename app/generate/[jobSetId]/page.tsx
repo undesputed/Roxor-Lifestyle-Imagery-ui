@@ -187,6 +187,17 @@ export default function GenerateDetailPage({ params }: { params: Promise<{ jobSe
             ls2: { taskId: null, status: "success", resultUrl: res.slots.ls2.resultUrl ?? "" },
             ls3: { taskId: null, status: "success", resultUrl: res.slots.ls3.resultUrl ?? "" },
           }} : prev);
+          // Persist companion cutout results to DynamoDB (best-effort)
+          if (res.companionCutouts && res.companionCutouts.length > 0) {
+            fetch("/api/generate/complete", {
+              method:  "POST",
+              headers: { "Content-Type": "application/json" },
+              body:    JSON.stringify({
+                salesCode:  current.salesCode,
+                companions: res.companionCutouts,
+              }),
+            }).catch(() => { /* best-effort — ignore failures */ });
+          }
           clearInterval(interval);
         } else if (res.executionStatus === "FAILED") {
           const failMsg = res.cause ?? res.error ?? "Pipeline failed";

@@ -14,7 +14,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Check, CreditCard, DownloadIcon, EyeIcon, List, RefreshCw, X } from "lucide-react";
+import { Check, CreditCard, DownloadIcon, EyeIcon, List, RefreshCw, Upload, X } from "lucide-react";
 import {
   loadImages,
   addImage,
@@ -305,10 +305,14 @@ function PreviewDialog({
 
 function ImageRow({
   img,
+  selected,
+  onToggle,
   onPreview,
   onChange,
 }: {
   img: GeneratedImage;
+  selected: boolean;
+  onToggle: (id: string) => void;
   onPreview: (img: GeneratedImage) => void;
   onChange: () => void;
 }) {
@@ -336,6 +340,14 @@ function ImageRow({
       className="border-b last:border-0 hover:bg-muted/40 cursor-pointer transition-colors"
       onClick={() => onPreview(img)}
     >
+      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={() => onToggle(img.id)}
+          className="h-4 w-4 rounded border-gray-300 accent-primary cursor-pointer"
+        />
+      </td>
       <td className="py-3 px-4 font-mono text-sm font-semibold">{img.salesCode}</td>
       <td className="py-3 px-4 text-xs">
         <span className="font-mono uppercase font-medium">{img.slot}</span>
@@ -594,6 +606,17 @@ function CardView({
   );
 }
 
+// ── Types (batch upload) ───────────────────────────────────────────────────────
+
+type BatchUploadItem = {
+  id: string;
+  salesCode: string;
+  slot: Slot;
+  url: string;
+  status: "queued" | "uploading" | "done" | "failed";
+  error?: string;
+};
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function ReviewPage() {
@@ -605,6 +628,78 @@ export default function ReviewPage() {
   const preview = images.find((i) => i.id === previewId) ?? null;
   const [previewOpen, setPreviewOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
+
+  // ── Row selection ─────────────────────────────────────────────────────────
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.size === images.length && images.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(images.map((i) => i.id)));
+    }
+  }
+
+  // ── Batch upload ──────────────────────────────────────────────────────────
+  const [batchItems, setBatchItems] = useState<BatchUploadItem[]>([]);
+  const [batchPhase, setBatchPhase] = useState<"idle" | "uploading" | "done">("idle");
+
+  const approvedSelected = images.filter(
+    (img) => img.status === "approved" && selectedIds.has(img.id)
+  );
+  const skippedCount = selectedIds.size - approvedSelected.length;
+
+  async function handleBatchUpload() {
+    if (approvedSelected.length === 0) return;
+    const items: BatchUploadItem[] = approvedSelected.map((img) => ({
+      id: img.id,
+      salesCode: img.salesCode,
+      slot: img.slot,
+      url: img.url,
+      status: "queued",
+    }));
+    setBatchItems(items);
+    setBatchPhase("uploading");
+
+    for (const item of items) {
+      setBatchItems((prev) =>
+        prev.map((r) => r.id === item.id ? { ...r, status: "uploading" } : r)
+      );
+      try {
+        const res = await fetch("/api/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            salesCode: item.salesCode,
+            slot: item.slot,
+            sourceUrl: item.url,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? data.error ?? "Upload failed");
+        setBatchItems((prev) =>
+          prev.map((r) => r.id === item.id ? { ...r, status: "done" } : r)
+        );
+      } catch (e: unknown) {
+        setBatchItems((prev) =>
+          prev.map((r) =>
+            r.id === item.id
+              ? { ...r, status: "failed", error: e instanceof Error ? e.message : "Unknown error" }
+              : r
+          )
+        );
+      }
+    }
+    setBatchPhase("done");
+  }
 
   const refresh = useCallback(() => setImages(loadImages()), []);
 
@@ -684,13 +779,27 @@ export default function ReviewPage() {
             Click a row to preview. Approve or reject from the list or the preview.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           {images.length > 0 && (
             <div className="flex gap-2 text-sm text-muted-foreground">
               <span>{pendingCount} pending</span>
               <span>·</span>
               <span>{approvedCount} approved</span>
             </div>
+          )}
+          {selectedIds.size > 0 && (
+            <Button
+              size="sm"
+              onClick={handleBatchUpload}
+              disabled={batchPhase === "uploading" || approvedSelected.length === 0}
+              className="gap-1.5"
+            >
+              <Upload className="size-3.5" />
+              Upload {approvedSelected.length} Approved
+              {skippedCount > 0 && (
+                <span className="text-xs opacity-70">({skippedCount} skipped)</span>
+              )}
+            </Button>
           )}
           <Button size="sm" variant="ghost" onClick={syncGeneratedFromBackend} disabled={syncing} className="gap-1.5">
             <RefreshCw className={`size-3.5 ${syncing ? "animate-spin" : ""}`} />
@@ -757,6 +866,18 @@ export default function ReviewPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b bg-muted/50 text-xs text-muted-foreground uppercase tracking-wide">
+                <th className="py-2.5 px-4 text-left font-medium w-10">
+                  <input
+                    type="checkbox"
+                    checked={images.length > 0 && selectedIds.size === images.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < images.length;
+                    }}
+                    onChange={toggleSelectAll}
+                    className="h-4 w-4 rounded border-gray-300 accent-primary cursor-pointer"
+                    title="Select all"
+                  />
+                </th>
                 <th className="py-2.5 px-4 text-left font-medium">Sales Code</th>
                 <th className="py-2.5 px-4 text-left font-medium">Slot</th>
                 <th className="py-2.5 px-4 text-left font-medium">Status</th>
@@ -769,9 +890,63 @@ export default function ReviewPage() {
                 <ImageRow
                   key={img.id}
                   img={img}
+                  selected={selectedIds.has(img.id)}
+                  onToggle={toggleSelect}
                   onPreview={openPreview}
                   onChange={refresh}
                 />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Batch upload progress */}
+      {batchPhase !== "idle" && (
+        <div className="rounded-xl border overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2.5 bg-muted/50 border-b">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Batch Upload — {batchItems.filter((r) => r.status === "done").length}/{batchItems.length} done
+            </p>
+            {batchPhase === "done" && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-xs h-6 px-2"
+                onClick={() => { setBatchPhase("idle"); setBatchItems([]); setSelectedIds(new Set()); }}
+              >
+                Dismiss
+              </Button>
+            )}
+          </div>
+          <table className="w-full text-sm">
+            <tbody>
+              {batchItems.map((item) => (
+                <tr key={item.id} className="border-b last:border-0">
+                  <td className="py-2 px-4 font-mono text-sm font-semibold">{item.salesCode}</td>
+                  <td className="py-2 px-4 text-xs font-mono uppercase">{item.slot}</td>
+                  <td className="py-2 px-4">
+                    {item.status === "queued" && (
+                      <Badge variant="outline" className="text-[11px] text-muted-foreground">Queued</Badge>
+                    )}
+                    {item.status === "uploading" && (
+                      <Badge variant="outline" className="text-[11px] bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700">
+                        Uploading…
+                      </Badge>
+                    )}
+                    {item.status === "done" && (
+                      <Badge variant="outline" className="text-[11px] bg-green-50 text-green-700 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700">
+                        Done
+                      </Badge>
+                    )}
+                    {item.status === "failed" && (
+                      <Badge variant="outline" className="text-[11px] bg-red-50 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700">
+                        Failed
+                      </Badge>
+                    )}
+                  </td>
+                  <td className="py-2 px-4 text-xs text-destructive">{item.error ?? ""}</td>
+                </tr>
               ))}
             </tbody>
           </table>
