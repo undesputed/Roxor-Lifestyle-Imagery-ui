@@ -348,10 +348,15 @@ export default function ProductsPage() {
     try {
       const res = await fetch("/api/products/missing-lifestyle");
       const data: ApiResponse = await res.json();
-      if (!res.ok)
-        throw new Error(
-          (data as { detail?: string }).detail ?? `Request failed (${res.status})`
-        );
+      if (!res.ok) {
+        const body = data as { detail?: string; syncRequired?: boolean };
+        if (res.status === 503 && body.syncRequired) {
+          throw new Error(
+            "No product data yet — please run a sync first using the Sync button above."
+          );
+        }
+        throw new Error(body.detail ?? `Request failed (${res.status})`);
+      }
       setMissingProducts(data.products);
     } catch (e: unknown) {
       setErrorMissing(e instanceof Error ? e.message : "Unknown error");
@@ -419,9 +424,10 @@ export default function ProductsPage() {
   // ── Sync from Akeneo ─────────────────────────────────────────────────────
 
   async function handleSync() {
-    setSyncBanner({ type: "loading", message: "Sync started — fetching products from Akeneo (this takes ~30 s)…" });
+    const syncStart = Date.now();
+    setSyncBanner({ type: "loading", message: "Sync started — Step Functions is paginating through Akeneo (this can take up to 10 minutes)…" });
     try {
-      // POST returns immediately (202) with a jobId; actual work runs in background
+      // POST returns immediately (202) with a jobId; actual work runs in Step Functions
       const res = await fetch("/api/sync/akeneo", { method: "POST" });
       const data: SyncAkeneoResponse = await res.json();
       if (!res.ok)
@@ -431,12 +437,22 @@ export default function ProductsPage() {
 
       const { jobId } = data;
 
-      // Poll GET /sync/status/{jobId} every 3 s until complete or failed
+      // Poll GET /sync/status/{jobId} every 10 s until complete or failed.
+      // Step Functions pages take ~2s each — no need to poll faster than 10s.
       const result = await new Promise<SyncStatusResponse>((resolve, reject) => {
         const poll = setInterval(async () => {
           try {
             const sr = await fetch(`/api/sync/status/${jobId}`);
             const sd: SyncStatusResponse = await sr.json();
+
+            // Update banner with elapsed time so the user knows it's still running
+            const elapsed = Math.floor((Date.now() - syncStart) / 60_000);
+            const elapsedText = elapsed < 1 ? "less than a minute" : `${elapsed} minute${elapsed > 1 ? "s" : ""}`;
+            setSyncBanner({
+              type: "loading",
+              message: `Sync in progress — ${elapsedText} elapsed. Step Functions is paginating through Akeneo…`,
+            });
+
             if (sd.status === "DISCOVERY_COMPLETE") {
               clearInterval(poll);
               resolve(sd);
@@ -448,13 +464,13 @@ export default function ProductsPage() {
           } catch {
             // transient network error — keep polling
           }
-        }, 3000);
+        }, 10_000);
 
-        // Safety timeout after 3 minutes
+        // Safety timeout after 25 minutes (Step Functions max + buffer)
         setTimeout(() => {
           clearInterval(poll);
-          reject(new Error("Sync timed out after 3 minutes"));
-        }, 180_000);
+          reject(new Error("Sync timed out after 25 minutes — check Step Functions console for status"));
+        }, 1_500_000);
       });
 
       setSyncBanner({

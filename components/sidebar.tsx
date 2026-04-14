@@ -14,6 +14,7 @@ import {
   LogOut,
   Moon,
   Search,
+  Settings,
   Sun,
   Upload,
 } from "lucide-react";
@@ -24,6 +25,7 @@ const navItems = [
   { href: "/generate", label: "Generate", icon: ImageIcon },
   { href: "/review", label: "Review", icon: ListChecks },
   { href: "/upload", label: "Upload", icon: Upload },
+  { href: "/settings", label: "Style", icon: Settings },
 ];
 
 function ThemeToggle() {
