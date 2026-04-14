@@ -6,13 +6,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import type { SingleGenerateResponse, SyncAkeneoResponse, SyncStatusResponse, BatchGenerateAllResponse } from "@/lib/types";
 import { RefreshCw, Zap, CheckSquare, Square, Loader2, Play } from "lucide-react";
 
 type GenerationStatus = "PENDING" | "GENERATING" | "GENERATED";
+type Classification = "missing" | "candidate";
 
 type Product = {
   identifier: string;
@@ -24,6 +24,7 @@ type Product = {
   hasLifestyle2: boolean;
   hasLifestyle3: boolean;
   generationStatus: GenerationStatus;
+  classification: Classification;
 };
 
 type ApiResponse = {
@@ -158,6 +159,7 @@ function ProductTable({
             <TableHead>Title</TableHead>
             <TableHead>Family</TableHead>
             <TableHead>Colour</TableHead>
+            <TableHead>Classification</TableHead>
             <TableHead>Cutout</TableHead>
             <TableHead>Lifestyle</TableHead>
             <TableHead>Pipeline</TableHead>
@@ -190,6 +192,19 @@ function ProductTable({
                   </TableCell>
                 )}
                 <TableCell className="font-mono text-xs">{product.identifier}</TableCell>
+                <TableCell>
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "text-xs",
+                      product.classification === "missing"
+                        ? "text-orange-600 border-orange-200 bg-orange-50 dark:bg-orange-950 dark:text-orange-300"
+                        : "text-purple-600 border-purple-200 bg-purple-50 dark:bg-purple-950 dark:text-purple-300"
+                    )}
+                  >
+                    {product.classification === "missing" ? "Missing Lifestyle" : "Dark Grey"}
+                  </Badge>
+                </TableCell>
                 <TableCell className="text-sm max-w-xs truncate">{product.title || "—"}</TableCell>
                 <TableCell>
                   <Badge variant="secondary" className="text-xs">{product.family}</Badge>
@@ -309,7 +324,8 @@ function filterProducts(products: Product[], query: string, statusFilter: Status
   if (!trimmed) return filtered;
   const q = trimmed.toLowerCase();
   return filtered.filter((product) =>
-    [product.identifier, product.title, product.family, product.colour]
+    [product.identifier, product.title, product.family, product.colour,
+     product.classification === "missing" ? "missing lifestyle" : "dark grey"]
       .map((v) => (v ?? "").toLowerCase())
       .some((v) => v.includes(q))
   );
@@ -320,12 +336,9 @@ function filterProducts(products: Product[], query: string, statusFilter: Status
 export default function ProductsPage() {
   const router = useRouter();
 
-  const [missingProducts, setMissingProducts] = useState<Product[]>([]);
-  const [candidateProducts, setCandidateProducts] = useState<Product[]>([]);
-  const [loadingMissing, setLoadingMissing] = useState(false);
-  const [loadingCandidates, setLoadingCandidates] = useState(false);
-  const [errorMissing, setErrorMissing] = useState<string | null>(null);
-  const [errorCandidates, setErrorCandidates] = useState<string | null>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [filterQuery, setFilterQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
@@ -342,26 +355,39 @@ export default function ProductsPage() {
 
   // ── Data fetching ────────────────────────────────────────────────────────
 
-  const fetchMissing = useCallback(async () => {
-    setLoadingMissing(true);
-    setErrorMissing(null);
+  const fetchProducts = useCallback(async () => {
+    setLoading(true);
+    setError(null);
     try {
-      const res = await fetch("/api/products/missing-lifestyle");
-      const data: ApiResponse = await res.json();
-      if (!res.ok) {
-        const body = data as { detail?: string; syncRequired?: boolean };
-        if (res.status === 503 && body.syncRequired) {
+      const [missingRes, candidatesRes] = await Promise.all([
+        fetch("/api/products/missing-lifestyle"),
+        fetch("/api/products/candidates"),
+      ]);
+
+      const missingData: ApiResponse = await missingRes.json();
+      if (!missingRes.ok) {
+        const body = missingData as { detail?: string; syncRequired?: boolean };
+        if (missingRes.status === 503 && body.syncRequired) {
           throw new Error(
             "No product data yet — please run a sync first using the Sync button above."
           );
         }
-        throw new Error(body.detail ?? `Request failed (${res.status})`);
+        throw new Error(body.detail ?? `Request failed (${missingRes.status})`);
       }
-      setMissingProducts(data.products);
+
+      const candidatesData: ApiResponse = await candidatesRes.json();
+      if (!candidatesRes.ok)
+        throw new Error(
+          (candidatesData as { detail?: string }).detail ?? `Request failed (${candidatesRes.status})`
+        );
+
+      const missing   = missingData.products.map((p) => ({ ...p, classification: "missing"   as Classification }));
+      const candidates = candidatesData.products.map((p) => ({ ...p, classification: "candidate" as Classification }));
+      setProducts([...missing, ...candidates]);
     } catch (e: unknown) {
-      setErrorMissing(e instanceof Error ? e.message : "Unknown error");
+      setError(e instanceof Error ? e.message : "Unknown error");
     } finally {
-      setLoadingMissing(false);
+      setLoading(false);
     }
   }, []);
 
@@ -372,7 +398,7 @@ export default function ProductsPage() {
       const res = await fetch("/api/products/missing-lifestyle");
       if (!res.ok) return;
       const data: ApiResponse = await res.json();
-      setMissingProducts((prev) => {
+      setProducts((prev) => {
         const statusMap = new Map(
           data.products.map((p) => [p.identifier, p.generationStatus])
         );
@@ -386,40 +412,19 @@ export default function ProductsPage() {
     }
   }, []);
 
-  const fetchCandidates = useCallback(async () => {
-    setLoadingCandidates(true);
-    setErrorCandidates(null);
-    try {
-      const res = await fetch("/api/products/candidates");
-      const data: ApiResponse = await res.json();
-      if (!res.ok)
-        throw new Error(
-          (data as { detail?: string }).detail ?? `Request failed (${res.status})`
-        );
-      setCandidateProducts(data.products);
-    } catch (e: unknown) {
-      setErrorCandidates(e instanceof Error ? e.message : "Unknown error");
-    } finally {
-      setLoadingCandidates(false);
-    }
-  }, []);
-
   useEffect(() => {
-    fetchMissing();
-  }, [fetchMissing]);
+    fetchProducts();
+  }, [fetchProducts]);
 
   // While any product is GENERATING, silently poll every 15 s to refresh
-  // the Pipeline badge. Uses refreshGenerationStatus (not fetchMissing) so
-  // the table, pagination, and selection are never disrupted.
+  // the Pipeline badge without disrupting the table, pagination, or selection.
   useEffect(() => {
-    const hasGenerating = missingProducts.some(
-      (p) => p.generationStatus === "GENERATING"
-    );
+    const hasGenerating = products.some((p) => p.generationStatus === "GENERATING");
     if (!hasGenerating) return;
 
     const interval = setInterval(refreshGenerationStatus, 15_000);
     return () => clearInterval(interval);
-  }, [missingProducts, refreshGenerationStatus]);
+  }, [products, refreshGenerationStatus]);
 
   // ── Sync from Akeneo ─────────────────────────────────────────────────────
 
@@ -478,7 +483,7 @@ export default function ProductsPage() {
         message: `Sync complete — ${result.totalProducts} products saved to DynamoDB (job ${jobId}).`,
       });
       setSelectedCodes(new Set()); // clear selection when the product list changes
-      await fetchMissing();
+      await fetchProducts();
     } catch (e: unknown) {
       setSyncBanner({
         type: "error",
@@ -579,7 +584,7 @@ export default function ProductsPage() {
   // products and fires a Step Functions execution for each. Returns immediately.
 
   async function handleProcessAll() {
-    const pendingCount = missingProducts.filter(
+    const pendingCount = products.filter(
       (p) => p.generationStatus === "PENDING"
     ).length;
     if (pendingCount === 0) return;
@@ -631,12 +636,11 @@ export default function ProductsPage() {
     });
   }
 
-  const filteredMissingProducts = filterProducts(missingProducts, filterQuery, statusFilter);
-  const filteredCandidateProducts = filterProducts(candidateProducts, filterQuery, "all");
+  const filteredProducts = filterProducts(products, filterQuery, statusFilter);
 
-  const pendingCount    = missingProducts.filter((p) => p.generationStatus === "PENDING").length;
-  const generatingCount = missingProducts.filter((p) => p.generationStatus === "GENERATING").length;
-  const generatedCount  = missingProducts.filter((p) => p.generationStatus === "GENERATED").length;
+  const pendingCount    = products.filter((p) => p.generationStatus === "PENDING").length;
+  const generatingCount = products.filter((p) => p.generationStatus === "GENERATING").length;
+  const generatedCount  = products.filter((p) => p.generationStatus === "GENERATED").length;
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -679,13 +683,13 @@ export default function ProductsPage() {
 
           {/* Refresh from DB */}
           <Button
-            onClick={fetchMissing}
+            onClick={fetchProducts}
             variant="outline"
             size="sm"
-            disabled={loadingMissing}
+            disabled={loading}
             className="gap-1.5"
           >
-            <RefreshCw className={cn("size-3.5", loadingMissing && "animate-spin")} />
+            <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
             Refresh
           </Button>
 
@@ -728,139 +732,85 @@ export default function ProductsPage() {
         </p>
       )}
 
-      {/* Tabs */}
-      <Tabs defaultValue="missing">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <TabsList>
-            <TabsTrigger value="missing">
-              Missing Lifestyle
-              {missingProducts.length > 0 && (
-                <Badge variant="secondary" className="ml-2 text-xs">
-                  {missingProducts.length}
-                </Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger
-              value="candidates"
-              onClick={() => {
-                if (candidateProducts.length === 0) fetchCandidates();
-              }}
-            >
-              Dark Grey Candidates
-              {candidateProducts.length > 0 && (
-                <Badge variant="secondary" className="ml-2 text-xs">
-                  {candidateProducts.length}
-                </Badge>
-              )}
-            </TabsTrigger>
-          </TabsList>
-
-          <div className="w-full sm:w-64">
-            <input
-              type="text"
-              placeholder="Filter by sales code, title, family, or colour…"
-              value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
-              className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            />
-          </div>
+      {/* Filter row */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        {/* Status filter pills */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {(["all", "PENDING", "GENERATING", "GENERATED"] as StatusFilter[]).map((f) => {
+            const count =
+              f === "all"        ? products.length  :
+              f === "PENDING"    ? pendingCount      :
+              f === "GENERATING" ? generatingCount   :
+                                   generatedCount;
+            return (
+              <button
+                key={f}
+                onClick={() => setStatusFilter(f)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                  statusFilter === f
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border bg-background text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {STATUS_FILTER_LABELS[f]}
+                <span className={cn(
+                  "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+                  statusFilter === f ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground"
+                )}>
+                  {count}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
-        {/* Missing Lifestyle tab — has checkboxes */}
-        <TabsContent value="missing" className="mt-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <CardTitle className="text-sm font-semibold">
-                  Products with cutout images but no lifestyle imagery
-                </CardTitle>
-                {/* Status filter pills */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {(["all", "PENDING", "GENERATING", "GENERATED"] as StatusFilter[]).map((f) => {
-                    const count =
-                      f === "all"        ? missingProducts.length  :
-                      f === "PENDING"    ? pendingCount            :
-                      f === "GENERATING" ? generatingCount         :
-                                          generatedCount;
-                    return (
-                      <button
-                        key={f}
-                        onClick={() => setStatusFilter(f)}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                          statusFilter === f
-                            ? "border-primary bg-primary text-primary-foreground"
-                            : "border-border bg-background text-muted-foreground hover:text-foreground"
-                        )}
-                      >
-                        {STATUS_FILTER_LABELS[f]}
-                        <span className={cn(
-                          "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-                          statusFilter === f ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground"
-                        )}>
-                          {count}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {loadingMissing && <ProductSkeleton />}
-              {errorMissing && (
-                <div className="rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">
-                  {errorMissing}
-                  <button onClick={fetchMissing} className="ml-3 underline">
-                    Retry
-                  </button>
-                </div>
-              )}
-              {!loadingMissing && !errorMissing && (
-                <ProductTable
-                  products={filteredMissingProducts}
-                  showGenerateButton
-                  selectable
-                  selectedCodes={selectedCodes}
-                  onToggleSelect={handleToggleSelect}
-                  onGenerate={handleSingleGenerate}
-                  generatingCode={generatingCode}
-                />
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
+        <div className="w-full sm:w-64">
+          <input
+            type="text"
+            placeholder="Filter by sales code, title, family, colour…"
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+            className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          />
+        </div>
+      </div>
 
-        {/* Dark Grey Candidates tab — no checkboxes (read-only reference) */}
-        <TabsContent value="candidates" className="mt-4">
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold">
-                Dark grey Balterley products with cutouts — good scene candidates
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {loadingCandidates && <ProductSkeleton />}
-              {errorCandidates && (
-                <div className="rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">
-                  {errorCandidates}
-                  <button onClick={fetchCandidates} className="ml-3 underline">
-                    Retry
-                  </button>
-                </div>
-              )}
-              {!loadingCandidates && !errorCandidates && (
-                <ProductTable
-                  products={filteredCandidateProducts}
-                  showGenerateButton
-                  onGenerate={handleSingleGenerate}
-                  generatingCode={generatingCode}
-                />
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+      {/* Combined product table */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold">
+            All Products
+            {products.length > 0 && (
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                {products.length} total
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loading && <ProductSkeleton />}
+          {error && (
+            <div className="rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              {error}
+              <button onClick={fetchProducts} className="ml-3 underline">
+                Retry
+              </button>
+            </div>
+          )}
+          {!loading && !error && (
+            <ProductTable
+              products={filteredProducts}
+              showGenerateButton
+              selectable
+              selectedCodes={selectedCodes}
+              onToggleSelect={handleToggleSelect}
+              onGenerate={handleSingleGenerate}
+              generatingCode={generatingCode}
+            />
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
