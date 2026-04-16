@@ -198,6 +198,54 @@ export function deleteJobSet(jobSetId: string): void {
   saveJobSets(loadJobSets().filter((s) => s.jobSetId !== jobSetId));
 }
 
+// ─── Companion cutouts (display-only in Review — never uploaded) ──────────────
+
+export type CompanionCutout = {
+  /** Sales code of the companion product (e.g. "BFDT1417") */
+  salesCode: string;
+  /** Sales code of the hero product this companion appeared with in LS1 */
+  heroSalesCode: string;
+  /** Cutout image URL from kie.ai */
+  resultUrl: string;
+  /** ISO date string */
+  generatedAt: string;
+};
+
+const COMPANIONS_KEY = "roxor_companion_cutouts";
+
+export function loadCompanionCutouts(): CompanionCutout[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return JSON.parse(localStorage.getItem(COMPANIONS_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveCompanionCutouts(cutouts: CompanionCutout[]): void {
+  localStorage.setItem(COMPANIONS_KEY, JSON.stringify(cutouts));
+  emitStoreChange();
+}
+
+/** Add companion cutouts, deduplicating by resultUrl. */
+export function addCompanionCutouts(
+  heroSalesCode: string,
+  companions: Array<{ salesCode: string; resultUrl: string }>,
+): void {
+  const existing    = loadCompanionCutouts();
+  const existingUrls = new Set(existing.map((c) => c.resultUrl));
+  const today = new Date().toISOString().slice(0, 10);
+  const toAdd = companions
+    .filter((c) => !existingUrls.has(c.resultUrl))
+    .map((c) => ({
+      salesCode:     c.salesCode,
+      heroSalesCode,
+      resultUrl:     c.resultUrl,
+      generatedAt:   today,
+    }));
+  if (toAdd.length > 0) saveCompanionCutouts([...toAdd, ...existing]);
+}
+
 /**
  * Derive a simple overall status for display in the queue list.
  * - "complete"     all of ls1 + ls2 + ls3 are success

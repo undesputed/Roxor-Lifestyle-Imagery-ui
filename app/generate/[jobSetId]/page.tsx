@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { JobSet, SlotJob, ExecutionStatusResponse, SingleGenerateResponse, Resolution } from "@/lib/types";
+import { addCompanionCutouts } from "@/lib/store";
 import {
   ArrowLeft,
   CheckCircle,
@@ -16,6 +17,7 @@ import {
   Loader2,
   ExternalLink,
   RotateCcw,
+  Images,
 } from "lucide-react";
 
 // ─── Poll interval ────────────────────────────────────────────────────────────
@@ -129,6 +131,35 @@ function SlotCard({ title, subtitle, job }: { title: string; subtitle: string; j
   );
 }
 
+// ─── Companion cutout card ────────────────────────────────────────────────────
+
+type CompanionCutout = { salesCode: string; resultUrl: string };
+
+function CompanionCard({ companion }: { companion: CompanionCutout }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border p-3 bg-card">
+      <div className="flex items-center justify-between">
+        <span className="font-mono text-xs font-semibold">{companion.salesCode}</span>
+        <Badge variant="outline" className="text-[10px] text-muted-foreground">Cutout</Badge>
+      </div>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={companion.resultUrl}
+        alt={companion.salesCode}
+        className="w-full rounded-md border object-contain bg-white max-h-48"
+      />
+      <a
+        href={companion.resultUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+      >
+        Open full image <ExternalLink className="size-3" />
+      </a>
+    </div>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function GenerateDetailPage({ params }: { params: Promise<{ jobSetId: string }> }) {
@@ -138,6 +169,7 @@ export default function GenerateDetailPage({ params }: { params: Promise<{ jobSe
   const [loading,      setLoading]      = useState(true);
   const [isRerunning,  setIsRerunning]  = useState(false);
   const [rerunError,   setRerunError]   = useState<string | null>(null);
+  const [companions,   setCompanions]   = useState<CompanionCutout[]>([]);
 
   // Ref so polling closure always reads the latest jobSet without re-creating the interval
   const jobSetRef = useRef<JobSet | null>(null);
@@ -145,9 +177,19 @@ export default function GenerateDetailPage({ params }: { params: Promise<{ jobSe
 
   // ── Initial load from DynamoDB ──────────────────────────────────────────────
   useEffect(() => {
-    fetchJobFromBackend(jobSetId).then(found => {
+    fetchJobFromBackend(jobSetId).then(async found => {
       setJobSet(found);
       setLoading(false);
+      // If the job is already completed, load companion data from execution status
+      if (found?.executionArn) {
+        try {
+          const execRes = await fetchExecutionStatus(found.executionArn);
+          if (execRes.executionStatus === "SUCCEEDED" && execRes.companionCutouts?.length) {
+            setCompanions(execRes.companionCutouts);
+            addCompanionCutouts(found.salesCode, execRes.companionCutouts);
+          }
+        } catch { /* ignore — companions are best-effort */ }
+      }
     });
   }, [jobSetId]);
 
@@ -187,8 +229,11 @@ export default function GenerateDetailPage({ params }: { params: Promise<{ jobSe
             ls2: { taskId: null, status: "success", resultUrl: res.slots.ls2.resultUrl ?? "" },
             ls3: { taskId: null, status: "success", resultUrl: res.slots.ls3.resultUrl ?? "" },
           }} : prev);
-          // Persist companion cutout results to DynamoDB (best-effort)
+          // Show companion cutout images on the page and persist to localStorage
           if (res.companionCutouts && res.companionCutouts.length > 0) {
+            setCompanions(res.companionCutouts);
+            addCompanionCutouts(current.salesCode, res.companionCutouts);
+            // Persist to DynamoDB (best-effort)
             fetch("/api/generate/complete", {
               method:  "POST",
               headers: { "Content-Type": "application/json" },
@@ -313,6 +358,28 @@ export default function GenerateDetailPage({ params }: { params: Promise<{ jobSe
             <Button size="sm">Go to Review →</Button>
           </Link>
         </div>
+      )}
+
+      {/* Companion products visible in the LS1 scene */}
+      {companions.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <Images className="size-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-semibold">Companion Products in LS1</CardTitle>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              These products appear in the LS1 room scene. White-background cutouts were generated alongside LS1 for reference only — they are not included in the upload queue.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {companions.map(c => (
+                <CompanionCard key={c.salesCode} companion={c} />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

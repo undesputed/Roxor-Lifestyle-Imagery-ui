@@ -14,15 +14,17 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { Check, CreditCard, DownloadIcon, EyeIcon, List, RefreshCw, Upload, X } from "lucide-react";
+import { Check, CreditCard, DownloadIcon, EyeIcon, Images, List, RefreshCw, Upload, X } from "lucide-react";
 import {
   loadImages,
   addImage,
   updateImageStatus,
   deleteImage,
+  loadCompanionCutouts,
   type GeneratedImage,
   type ReviewStatus,
   type Slot,
+  type CompanionCutout,
 } from "@/lib/store";
 import type { ExecutionStatusResponse } from "@/lib/types";
 
@@ -606,6 +608,64 @@ function CardView({
   );
 }
 
+// ── Companion cutouts grid (read-only, no upload) ─────────────────────────────
+
+function CompanionGrid({ companions }: { companions: CompanionCutout[] }) {
+  if (companions.length === 0) return null;
+
+  // Group by heroSalesCode so you can see which hero each companion appeared with
+  const grouped = companions.reduce<Record<string, CompanionCutout[]>>((acc, c) => {
+    (acc[c.heroSalesCode] ??= []).push(c);
+    return acc;
+  }, {});
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Images className="size-4 text-muted-foreground" />
+        <h3 className="text-sm font-semibold">Companion Cutouts</h3>
+        <Badge variant="outline" className="text-xs text-muted-foreground">Reference only — not uploaded</Badge>
+      </div>
+
+      {Object.entries(grouped).map(([heroCode, items]) => (
+        <div key={heroCode} className="space-y-2">
+          <p className="text-xs text-muted-foreground font-mono">
+            Appeared in LS1 with <span className="font-semibold text-foreground">{heroCode}</span>
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+            {items.map((c) => (
+              <div key={c.salesCode + c.resultUrl} className="flex flex-col gap-1.5 rounded-lg border p-2.5 bg-card">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-xs font-semibold truncate">{c.salesCode}</span>
+                </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={c.resultUrl}
+                  alt={c.salesCode}
+                  className="w-full rounded-md border object-contain bg-white aspect-square"
+                />
+                <div className="flex items-center gap-1">
+                  <button
+                    title="Download"
+                    className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                    onClick={() => {
+                      const a = document.createElement("a");
+                      a.href = `/api/download?url=${encodeURIComponent(c.resultUrl)}&filename=${c.salesCode}-cutout.png`;
+                      a.click();
+                    }}
+                  >
+                    <DownloadIcon className="size-3" /> Download
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Types (batch upload) ───────────────────────────────────────────────────────
 
 type BatchUploadItem = {
@@ -701,7 +761,12 @@ export default function ReviewPage() {
     setBatchPhase("done");
   }
 
-  const refresh = useCallback(() => setImages(loadImages()), []);
+  const [companions, setCompanions] = useState<CompanionCutout[]>([]);
+
+  const refresh = useCallback(() => {
+    setImages(loadImages());
+    setCompanions(loadCompanionCutouts());
+  }, []);
 
   useEffect(() => {
     refresh();
@@ -961,6 +1026,13 @@ export default function ReviewPage() {
           onOpenChange={setPreviewOpen}
           onChange={refresh}
         />
+      )}
+
+      {/* Companion cutouts — reference only, not uploadable */}
+      {companions.length > 0 && (
+        <div className="rounded-xl border p-4 space-y-4">
+          <CompanionGrid companions={companions} />
+        </div>
       )}
     </div>
   );
